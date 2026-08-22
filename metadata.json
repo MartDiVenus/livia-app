@@ -1,0 +1,6 @@
+{
+  "name": "LiViA Editor™",
+  "description": "Editor di testo e codice Vim per Google Drive™ e Google Docs™.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

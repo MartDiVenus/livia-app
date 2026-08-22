@@ -1,0 +1,35 @@
+<svg width="220" height="140" viewBox="0 0 220 140" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="220" height="140" rx="8" fill="url(#bgGrad)"/>
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="220" y2="140" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <linearGradient id="featherLeftGrad" x1="20" y1="20" x2="50" y2="85" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2DD4BF" />
+      <stop offset="100%" stop-color="#0EA5E9" />
+    </linearGradient>
+    <linearGradient id="featherRightGrad" x1="80" y1="20" x2="50" y2="85" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#0EA5E9" />
+    </linearGradient>
+  </defs>
+  
+  <!-- Feather logo graphics scaled & centered on left side -->
+  <g transform="translate(10, 20) scale(1.0)">
+    <g id="left-feather">
+      <path d="M 28,15 C 32,32 40,65 50,85" stroke="url(#featherLeftGrad)" stroke-width="2.5" stroke-linecap="round" />
+      <path d="M 28,15 C 18,30 23,45 32,53 C 23,55 24,64 35,68 C 27,70 30,77 40,79 C 35,80 39,84 50,85 C 47,75 42,60 38,45 C 42,32 35,22 28,15 Z" fill="url(#featherLeftGrad)" fill-opacity="0.85" stroke="url(#featherLeftGrad)" stroke-width="0.5" stroke-linejoin="round" />
+    </g>
+    <g id="right-feather">
+      <path d="M 72,15 C 68,32 60,65 50,85" stroke="url(#featherRightGrad)" stroke-width="2.5" stroke-linecap="round" />
+      <path d="M 72,15 C 82,30 77,45 68,53 C 77,55 76,64 65,68 C 73,70 70,77 60,79 C 65,80 61,84 50,85 C 53,75 58,60 62,45 C 58,32 65,22 72,15 Z" fill="url(#featherRightGrad)" fill-opacity="0.85" stroke="url(#featherRightGrad)" stroke-width="0.5" stroke-linejoin="round" />
+    </g>
+    <circle cx="50" cy="85" r="2.5" fill="#38BDF8" />
+  </g>
+
+  <!-- Text -->
+  <text x="110" y="62" fill="#FFFFFF" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="700" font-size="22">LiViA</text>
+  <text x="110" y="84" fill="#38BDF8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="600" font-size="14">Editor</text>
+  <text x="110" y="104" fill="#94A3B8" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-weight="400" font-size="9">Google Drive Web App</text>
+</svg>

@@ -1,0 +1,3249 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { 
+  getLineColFromIndex, 
+  getIndexFromLineCol, 
+  moveCursor, 
+  deleteCharacterAt, 
+  deleteChar,
+  deleteLines, 
+  deleteWords, 
+  moveWord,
+  moveWordBack,
+  reformatParagraph,
+  executeSearchAndReplace, 
+  findSearchMatches,
+  parseKeyFromVimCommand
+} from '../utils/vimEngine';
+import { VimMode, FileFormat, FileData, sanitizeText } from '../types';
+import { renderRichPreviewContent } from '../utils/previewRenderer';
+import { convertGoogleDocsHtmlToMarkdown, cleanGoogleDocsMarkdown, copyFormattedForGoogleDocs } from '../utils/googleDocsHelper';
+import { 
+  HelpCircle, 
+  Sparkles, 
+  Eye, 
+  Edit3, 
+  Search, 
+  Terminal, 
+  Check, 
+  Info,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
+  Layers,
+  Cpu,
+  FileText,
+  Pencil,
+  BookOpen,
+  Keyboard,
+  Maximize2,
+  Minimize2,
+  ZoomIn,
+  ZoomOut,
+  RotateCcw,
+  X
+} from 'lucide-react';
+
+/* ---------------------------------------------------------------------
+ * Layout constants for the adaptive (mobile / PWA) editor height.
+ * Dynamic line height calculation ensures textarea, syntax backdrop,
+ * and line number overlays are 100% pixel-aligned at any font size (12-48px).
+ * ------------------------------------------------------------------- */
+const getLineHeightPx = (fontSize: number) => Math.round(fontSize * 1.5);
+const EDITOR_PADDING_PX = 32; // p-4 top + bottom
+const MAX_EOF_ROWS = 400;     // safety cap for the end-of-buffer tildes
+
+interface VimEditorProps {
+  content: string;
+  setContent: (text: string) => void;
+  format: FileFormat;
+  filename: string;
+  theme: 'light' | 'dark' | 'system';
+  fileSessionId: number;
+  onSyncClipboard: (yankText: string) => void;
+  externalClipboardText: () => Promise<string>;
+  showLineNumbers: boolean;
+  wordWrap: boolean;
+  editorFontSize: number;
+  setEditorFontSize?: (val: number) => void;
+  syntaxHighlightOn: boolean;
+  onSaveFileState: (name: string, content: string) => void;
+  onReadFileState: (name: string) => string | null;
+  onOpenFileState?: (targetName: string) => { found: boolean; name: string };
+  onShowHelp?: (topic?: string) => void;
+  lang?: 'it' | 'en';
+  setLang?: (lang: 'it' | 'en') => void;
+  onOpenGoogleDocsModal?: () => void;
+  onOpenSettingsModal?: () => void;
+  onModeChange?: (mode: VimMode) => void;
+  isSoftKeyboardOpen?: boolean;
+  onSoftKeyboardChange?: (isOpen: boolean) => void;
+}
+
+export function VimEditor({
+  content,
+  setContent,
+  format,
+  filename,
+  theme,
+  fileSessionId,
+  onSyncClipboard,
+  externalClipboardText,
+  showLineNumbers,
+  wordWrap,
+  editorFontSize,
+  setEditorFontSize,
+  syntaxHighlightOn,
+  onSaveFileState,
+  onReadFileState,
+  onOpenFileState,
+  onShowHelp,
+  lang = 'it',
+  setLang,
+  onOpenGoogleDocsModal,
+  onOpenSettingsModal,
+  onModeChange,
+  isSoftKeyboardOpen,
+  onSoftKeyboardChange
+}: VimEditorProps) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const lineNumbersRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const commandInputRef = useRef<HTMLInputElement>(null);
+
+  // Detect whether device is touch/mobile (Android, iOS, tablets) vs Desktop (Debian, Linux, PC)
+  const isTouchDevice = typeof window !== 'undefined' && (
+    ('ontouchstart' in window) || 
+    (navigator.maxTouchPoints > 0) || 
+    /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '')
+  );
+
+  // On Mobile/Touch, start in clean Google Docs read mode with Edit button; on Desktop Debian/PC, start in direct editing mode
+  const [isReadMode, setIsReadMode] = useState<boolean>(() => isTouchDevice);
+  const [isSoftKeyboardActive, setIsSoftKeyboardActive] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isSoftKeyboardOpen !== undefined) {
+      setIsSoftKeyboardActive(isSoftKeyboardOpen);
+    }
+  }, [isSoftKeyboardOpen]);
+
+  const openSoftKeyboard = () => {
+    setIsReadMode(false);
+    setIsSoftKeyboardActive(true);
+    onSoftKeyboardChange?.(true);
+    setTimeout(() => {
+      if (mode === 'command' || mode === 'search') {
+        commandInputRef.current?.focus();
+      } else if (textareaRef.current) {
+        textareaRef.current.focus();
+      }
+    }, 40);
+  };
+
+  const closeSoftKeyboard = () => {
+    setIsSoftKeyboardActive(false);
+    onSoftKeyboardChange?.(false);
+    if (textareaRef.current) {
+      textareaRef.current.blur();
+    }
+    if (commandInputRef.current) {
+      commandInputRef.current.blur();
+    }
+  };
+
+  const toggleSoftKeyboard = () => {
+    if (isSoftKeyboardActive) {
+      closeSoftKeyboard();
+    } else {
+      openSoftKeyboard();
+    }
+  };
+
+  /* ------------------------------------------------------------------
+   * END-OF-BUFFER FILLER
+   * The editing frame always fills the space left by the toolbar and by
+   * the panels that are open, so the status bar is glued to the bottom
+   * edge and nothing is wasted below it. The area between the last line
+   * and the bar is real editing surface: it is marked with Vim's `~`
+   * end-of-buffer rows so it reads as an empty buffer, not dead space.
+   * ------------------------------------------------------------------ */
+  const measureRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [measuredContentHeight, setMeasuredContentHeight] = useState<number>(0);
+  const [frameHeight, setFrameHeight] = useState<number>(0);
+
+  // Real rendered height of the text (honours word wrap and font size)
+  useLayoutEffect(() => {
+    const el = measureRef.current;
+    if (!el) return;
+    const update = () => setMeasuredContentHeight(el.offsetHeight);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Height currently available to the editing frame
+  useLayoutEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    const update = () => setFrameHeight(el.clientHeight);
+    update();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Core Vim State
+  const [cursorIndex, setCursorIndex] = useState<number>(0);
+  const [visualAnchorIndex, setVisualAnchorIndex] = useState<number>(0);
+  const [mode, setMode] = useState<VimMode>('normal');
+  const [commandBuffer, setCommandBuffer] = useState<string>('');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [activeSearchIdx, setActiveSearchIdx] = useState<number>(-1);
+  const [yankedText, setYankedText] = useState<string>('');
+
+  useEffect(() => {
+    onModeChange?.(mode);
+  }, [mode, onModeChange]);
+
+  // Extended Vim Settings & Folding & Syntax
+  const [textwidth, setTextwidth] = useState<number>(80);
+  const [geminiModel, setGeminiModelState] = useState<'flash' | 'pro'>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('livia_gemini_model');
+      if (saved === 'pro' || saved === 'flash') return saved;
+    }
+    return 'flash';
+  });
+
+  const setGeminiModel = (m: 'flash' | 'pro') => {
+    setGeminiModelState(m);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('livia_gemini_model', m);
+    }
+  };
+  const [foldingEnabled, setFoldingEnabled] = useState<boolean>(true);
+  const [foldedLines, setFoldedLines] = useState<Set<number>>(new Set());
+  const [isSyntaxActive, setIsSyntaxActive] = useState<boolean>(syntaxHighlightOn);
+
+  useEffect(() => {
+    setIsSyntaxActive(syntaxHighlightOn);
+  }, [syntaxHighlightOn]);
+
+  // Reset cursor, selection, mode and focus when switching or opening a file
+  useEffect(() => {
+    setCursorIndex(0);
+    setVisualAnchorIndex(0);
+    setMode('normal');
+    setUndoHistory([]);
+    setRedoHistory([]);
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.selectionStart = 0;
+      textareaRef.current.selectionEnd = 0;
+    }
+  }, [fileSessionId]);
+  
+  // u and . history stacks
+  const [undoHistory, setUndoHistory] = useState<string[]>([]);
+  const [redoHistory, setRedoHistory] = useState<string[]>([]);
+
+  // Commands input text (activated by ':' or '/')
+  const [commandInput, setCommandInput] = useState<string>('');
+  const [statusMessage, setStatusMessage] = useState<string>(() =>
+    lang === 'it'
+      ? 'Benvenuto in LiViA. Premi "i" per scrivere, o :h per la guida.'
+      : 'Welcome to LiViA. Press "i" to write, or :h for help.'
+  );
+
+  useEffect(() => {
+    setStatusMessage(prev => {
+      if (
+        prev === 'Benvenuto in LiViA. Premi "i" per scrivere, o :h per la guida.' ||
+        prev === 'Welcome to LiViA. Press "i" to write, or :h for help.' ||
+        prev === '-- MODALITÀ NORMALE --' ||
+        prev === '-- NORMAL MODE --'
+      ) {
+        return lang === 'it'
+          ? 'Benvenuto in LiViA. Premi "i" per scrivere, o :h per la guida.'
+          : 'Welcome to LiViA. Press "i" to write, or :h for help.';
+      }
+      return prev;
+    });
+  }, [lang]);
+
+  // Vim Command History (: & /)
+  const [commandHistory, setCommandHistory] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('livia_cmd_history') || '[]');
+    } catch {
+      return [];
+    }
+  });
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const historyDraftRef = useRef<string>('');
+  const isProgrammaticSelectionRef = useRef<boolean>(false);
+  const isUserPointerDownRef = useRef<boolean>(false);
+
+  const handlePointerDown = () => {
+    isUserPointerDownRef.current = true;
+  };
+
+  const saveToCommandHistory = (rawCmd: string) => {
+    const trimmed = rawCmd.trim();
+    if (!trimmed) return;
+    setCommandHistory(prev => {
+      const filtered = prev.filter(c => c !== trimmed);
+      const updated = [...filtered, trimmed].slice(-50);
+      try {
+        localStorage.setItem('livia_cmd_history', JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+    setHistoryIndex(-1);
+    historyDraftRef.current = '';
+  };
+
+  // Layout splits
+  const [showPreview, setShowPreview] = useState<boolean>(false);
+  const [isPreviewFullScreen, setIsPreviewFullScreen] = useState<boolean>(false);
+  const [previewZoom, setPreviewZoom] = useState<number>(100);
+  const [showModeMenu, setShowModeMenu] = useState<boolean>(false);
+
+  const handleSelectMode = (newMode: 'normal' | 'insert' | 'visual' | 'visual-line') => {
+    setIsReadMode(false);
+    setCommandBuffer('');
+    setShowModeMenu(false);
+    if (newMode === 'normal') {
+      setMode('normal');
+      setStatusMessage(lang === 'it' ? '-- MODALITÀ NORMALE --' : '-- NORMAL MODE --');
+      focusEditor();
+    } else if (newMode === 'insert') {
+      setMode('insert');
+      setStatusMessage(lang === 'it' ? '-- MODALITÀ INSERIMENTO --' : '-- INSERT MODE --');
+      focusEditor();
+    } else if (newMode === 'visual') {
+      setVisualAnchorIndex(cursorIndex);
+      setMode('visual');
+      setStatusMessage(lang === 'it' ? '-- MODALITÀ VISUALE --' : '-- VISUAL MODE --');
+      focusEditor();
+    } else if (newMode === 'visual-line') {
+      setVisualAnchorIndex(cursorIndex);
+      setMode('visual-line');
+      setStatusMessage(lang === 'it' ? '-- MODALITÀ VISUALE RIGA --' : '-- VISUAL LINE MODE --');
+      focusEditor();
+    }
+  };
+
+  const vimModesList: { key: 'normal' | 'insert' | 'visual' | 'visual-line'; label: string; shortcut: string; descIt: string; descEn: string }[] = [
+    { key: 'normal', label: 'NORMAL', shortcut: 'Esc', descIt: 'Comandi e movimenti Vim', descEn: 'Vim navigation & commands' },
+    { key: 'insert', label: 'INSERT', shortcut: 'i', descIt: 'Scrittura e digitazione testo', descEn: 'Text typing & editing' },
+    { key: 'visual', label: 'VISUAL', shortcut: 'v', descIt: 'Selezione per caratteri', descEn: 'Character-wise selection' },
+    { key: 'visual-line', label: 'V-LINE', shortcut: 'Shift+V', descIt: 'Selezione per righe intere', descEn: 'Line-wise selection' },
+  ];
+
+  const getVisualLineBounds = (text: string, start: number, end: number) => {
+    let startOfLines = start;
+    while (startOfLines > 0 && text[startOfLines - 1] !== '\n') {
+      startOfLines--;
+    }
+    let endOfLines = end;
+    while (endOfLines < text.length && text[endOfLines] !== '\n') {
+      endOfLines++;
+    }
+    if (endOfLines < text.length && text[endOfLines] === '\n') {
+      endOfLines++;
+    }
+    return { startOfLines, endOfLines };
+  };
+
+  // Sync cursor selection when index changes
+  useEffect(() => {
+    if (textareaRef.current) {
+      isProgrammaticSelectionRef.current = true;
+      if (mode === 'normal') {
+        // Seleziona esattamente un carattere per simulare il cursore a blocco di Vim!
+        const expectedEnd = Math.min(cursorIndex + 1, content.length);
+        if (textareaRef.current.selectionStart !== cursorIndex || textareaRef.current.selectionEnd !== expectedEnd) {
+          textareaRef.current.selectionStart = cursorIndex;
+          textareaRef.current.selectionEnd = expectedEnd;
+        }
+      } else if (mode === 'visual' || mode === 'visual-line') {
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          if (textareaRef.current.selectionStart !== startOfLines || textareaRef.current.selectionEnd !== endOfLines) {
+            textareaRef.current.selectionStart = startOfLines;
+            textareaRef.current.selectionEnd = endOfLines;
+          }
+        } else {
+          const expectedEnd = Math.min(end + 1, content.length);
+          if (textareaRef.current.selectionStart !== start || textareaRef.current.selectionEnd !== expectedEnd) {
+            textareaRef.current.selectionStart = start;
+            textareaRef.current.selectionEnd = expectedEnd;
+          }
+        }
+      } else {
+        if (textareaRef.current.selectionStart !== cursorIndex || textareaRef.current.selectionEnd !== cursorIndex) {
+          textareaRef.current.selectionStart = cursorIndex;
+          textareaRef.current.selectionEnd = cursorIndex;
+        }
+      }
+
+      // Wait for React's synthetic onSelect to fire before allowing user selections again
+      setTimeout(() => {
+        isProgrammaticSelectionRef.current = false;
+      }, 10);
+
+      // Automatically keep cursor line visible on scroll with margin
+      const textarea = textareaRef.current;
+      const currentScrollTop = textarea.scrollTop;
+      const currentScrollBottom = currentScrollTop + textarea.clientHeight;
+      const lineHeight = getLineHeightPx(editorFontSize);
+      const caretSpan = backdropRef.current?.querySelector('#caret-pos');
+      
+      let cursorScrollTop;
+      if (caretSpan) {
+        cursorScrollTop = caretSpan.offsetTop;
+      } else {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        cursorScrollTop = line * lineHeight;
+      }
+      
+      if (cursorScrollTop < currentScrollTop + lineHeight * 2) {
+        // Scroll up with margin
+        textarea.scrollTop = Math.max(0, cursorScrollTop - lineHeight * 2);
+      } else if (cursorScrollTop > currentScrollBottom - lineHeight * 3) {
+        // Scroll down with margin
+        textarea.scrollTop = cursorScrollTop - textarea.clientHeight + lineHeight * 3;
+      }
+    }
+  }, [cursorIndex, mode, visualAnchorIndex, content]);
+
+  // Handle focus
+  const focusEditor = () => {
+    if (textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  };
+
+  const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
+    if (lineNumbersRef.current) {
+      lineNumbersRef.current.scrollTop = e.currentTarget.scrollTop;
+    }
+    if (backdropRef.current) {
+      backdropRef.current.scrollTop = e.currentTarget.scrollTop;
+      backdropRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    }
+  };
+
+  useEffect(() => {
+    if (mode === 'command' || mode === 'search') {
+      setHistoryIndex(-1);
+      historyDraftRef.current = '';
+      setTimeout(() => {
+        commandInputRef.current?.focus();
+        // Place cursor at the end of the input
+        if (commandInputRef.current) {
+          const val = commandInputRef.current.value;
+          commandInputRef.current.selectionStart = commandInputRef.current.selectionEnd = val.length;
+        }
+      }, 50);
+    } else {
+      focusEditor();
+    }
+  }, [mode]);
+
+  // Save state for undo before modification
+  const pushToUndo = (oldText: string) => {
+    setUndoHistory(prev => [...prev, oldText]);
+    setRedoHistory([]); // Clear redo upon new change
+  };
+
+  // Process search execution
+  const executeSearch = (query: string) => {
+    if (!query) {
+      setSearchResults([]);
+      setActiveSearchIdx(-1);
+      return;
+    }
+    const matches = findSearchMatches(content, query);
+    setSearchResults(matches);
+    if (matches.length > 0) {
+      // Find closest match starting after current cursor position
+      let bestIdx = 0;
+      for (let i = 0; i < matches.length; i++) {
+        if (matches[i] >= cursorIndex) {
+          bestIdx = i;
+          break;
+        }
+      }
+      setActiveSearchIdx(bestIdx);
+      setCursorIndex(matches[bestIdx]);
+      setStatusMessage(
+        lang === 'it'
+          ? `Trovati ${matches.length} riscontri per "${query}". Premi "n" per prossimo, "N" per precedente.`
+          : `Found ${matches.length} matches for "${query}". Press "n" for next, "N" for previous.`
+      );
+    } else {
+      setActiveSearchIdx(-1);
+      setStatusMessage(
+        lang === 'it'
+          ? `Nessun riscontro per: ${query}`
+          : `No matches found for: ${query}`
+      );
+    }
+  };
+
+  // Handle paste events (intercept clipboard, normalize line endings, and prevent desync)
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    e.preventDefault();
+    const htmlData = e.clipboardData.getData('text/html');
+    let textToInsert = '';
+
+    if (htmlData && (htmlData.includes('docs-internal-guid') || htmlData.includes('google') || htmlData.trim().startsWith('<'))) {
+      const convertedMarkdown = convertGoogleDocsHtmlToMarkdown(htmlData);
+      if (convertedMarkdown && convertedMarkdown.trim().length > 0) {
+        textToInsert = convertedMarkdown;
+      }
+    }
+
+    if (!textToInsert) {
+      const textData = e.clipboardData.getData('text/plain');
+      if (textData) {
+        textToInsert = cleanGoogleDocsMarkdown(textData);
+      }
+    }
+
+    if (textToInsert) {
+      const sanitizedInsert = sanitizeText(textToInsert);
+      pushToUndo(content);
+
+      let startPos = cursorIndex;
+      let endPos = cursorIndex;
+
+      if (mode === 'visual' || mode === 'visual-line') {
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          startPos = startOfLines;
+          endPos = endOfLines;
+        } else {
+          startPos = start;
+          endPos = Math.min(end + 1, content.length);
+        }
+        setMode('normal');
+      }
+
+      const before = content.substring(0, startPos);
+      const after = content.substring(endPos);
+      const newText = before + sanitizedInsert + after;
+      setContent(newText);
+
+      const newCursorIdx = startPos + sanitizedInsert.length;
+      setCursorIndex(newCursorIdx);
+
+      if (textareaRef.current) {
+        textareaRef.current.value = newText;
+        textareaRef.current.selectionStart = newCursorIdx;
+        textareaRef.current.selectionEnd = (mode === 'normal') ? Math.min(newCursorIdx + 1, newText.length) : newCursorIdx;
+      }
+
+      setStatusMessage(lang === 'it' ? `Incollati ${sanitizedInsert.length} caratteri.` : `Pasted ${sanitizedInsert.length} characters.`);
+    }
+  };
+
+  // Core Vim key event processor (Supports Desktop + Android Chrome soft keyboard inputs)
+  const processVimKey = (key: string) => {
+    // ESC key returns to Normal mode from any state
+    if (key === 'Escape') {
+      const prevMode = mode;
+      setMode('normal');
+      setCommandBuffer('');
+      setCommandInput('');
+      setStatusMessage('-- MODALITÀ NORMALE --');
+      
+      const { line, col } = getLineColFromIndex(content, cursorIndex);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      if (lineText.length > 0 && col >= lineText.length) {
+        setCursorIndex(getIndexFromLineCol(content, line, lineText.length - 1));
+      } else if (lineText.length > 0 && col > 0 && prevMode === 'insert') {
+        setCursorIndex(getIndexFromLineCol(content, line, col - 1));
+      }
+      
+      focusEditor();
+      return;
+    }
+
+    // Insert Mode behavior
+    if (mode === 'insert') {
+      return;
+    }
+
+    if (mode === 'command' || mode === 'search') {
+      return;
+    }
+
+    // Visual / Visual Line Mode behavior
+    if (mode === 'visual' || mode === 'visual-line') {
+      // In Vim, '0' by itself is a motion to beginning of line (column 0).
+      // Digits 1-9 start a count multiplier; '0' only extends a count if already started.
+      if (key === '0' && commandBuffer === '') {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        const nextIdx = getIndexFromLineCol(content, line, 0);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? 'Visuale: Inizio riga (0)' : 'Visual: Start of line (0)');
+        return;
+      }
+
+      if (key === '^' && commandBuffer === '') {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        const lines = content.split('\n');
+        const lineText = lines[line] || '';
+        const firstNonBlank = lineText.search(/\S/);
+        const targetCol = firstNonBlank >= 0 ? firstNonBlank : 0;
+        const nextIdx = getIndexFromLineCol(content, line, targetCol);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? 'Visuale: Primo carattere non vuoto (^)' : 'Visual: First non-blank (^) ');
+        return;
+      }
+
+      // Accumulate numbers for count prefixes
+      if (/^[1-9]$/.test(key) || (key === '0' && /^[1-9]/.test(commandBuffer))) {
+        setCommandBuffer(prev => prev + key);
+        setStatusMessage(lang === 'it' ? `Selezione: ${commandBuffer + key}` : `Selection: ${commandBuffer + key}`);
+        return;
+      }
+
+      const countMatch = commandBuffer.match(/^([0-9]+)/);
+      const count = countMatch ? parseInt(countMatch[1], 10) : 1;
+
+      if (key === 'g') {
+        if (commandBuffer.endsWith('g') || countMatch) {
+          const lineDest = countMatch ? count - 1 : 0;
+          const nextIdx = getIndexFromLineCol(content, lineDest, 0);
+          setCursorIndex(nextIdx);
+          setStatusMessage(lang === 'it' ? `Visuale: Vai alla riga ${lineDest + 1}` : `Visual: Go to line ${lineDest + 1}`);
+          setCommandBuffer('');
+        } else {
+          setCommandBuffer(prev => prev + 'g');
+        }
+        return;
+      }
+
+      if (key === 'G') {
+        const lines = content.split('\n');
+        const lineDest = countMatch ? count - 1 : lines.length - 1;
+        const nextIdx = getIndexFromLineCol(content, lineDest, 0);
+        setCursorIndex(nextIdx);
+        setStatusMessage(lang === 'it' ? `Visuale: Vai alla riga ${lineDest + 1}` : `Visual: Go to line ${lineDest + 1}`);
+        setCommandBuffer('');
+        return;
+      }
+
+      if (commandBuffer.endsWith('g') && key !== 'g') {
+        setCommandBuffer('');
+      }
+
+      if (key === '$') {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        const lines = content.split('\n');
+        const lineText = lines[line] || '';
+        const endCol = Math.max(0, lineText.length - 1);
+        const nextIdx = getIndexFromLineCol(content, line, endCol);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? 'Visuale: Fino a fine riga ($)' : 'Visual: To end of line ($)');
+        return;
+      }
+      if (key === '0' && commandBuffer === '') {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        const nextIdx = getIndexFromLineCol(content, line, 0);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? 'Visuale: Fino a inizio riga (0)' : 'Visual: To line start (0)');
+        return;
+      }
+      if (key === 'w') {
+        const nextIdx = moveWord(content, cursorIndex, count);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? `Visuale: Avanza di ${count} parol${count > 1 ? 'e' : 'a'} (w)` : `Visual: Forward ${count} word(s) (w)`);
+        return;
+      }
+      if (key === 'b') {
+        const nextIdx = moveWordBack(content, cursorIndex, count);
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? `Visuale: Indietro di ${count} parol${count > 1 ? 'e' : 'a'} (b)` : `Visual: Backward ${count} word(s) (b)`);
+        return;
+      }
+      if (key === 'h' || key === 'ArrowLeft') {
+        const nextIdx = moveCursor(content, cursorIndex, 'left', count, 'visual');
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        return;
+      }
+      if (key === 'l' || key === 'ArrowRight') {
+        const nextIdx = moveCursor(content, cursorIndex, 'right', count, 'visual');
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        return;
+      }
+      if (key === 'j' || key === 'ArrowDown') {
+        const nextIdx = moveCursor(content, cursorIndex, 'down', count, 'visual');
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        return;
+      }
+      if (key === 'k' || key === 'ArrowUp') {
+        const nextIdx = moveCursor(content, cursorIndex, 'up', count, 'visual');
+        setCursorIndex(nextIdx);
+        setCommandBuffer('');
+        return;
+      }
+
+      if (key === 'y') {
+        let selectedText = '';
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          selectedText = content.substring(startOfLines, endOfLines);
+        } else {
+          selectedText = content.substring(start, end + 1);
+        }
+        setYankedText(selectedText);
+        onSyncClipboard(selectedText);
+        setMode('normal');
+        setCommandBuffer('');
+        setStatusMessage(`Testo copiato negli appunti: ${selectedText.length} caratteri.`);
+        return;
+      }
+
+      if (key === 'd' || key === 'x') {
+        pushToUndo(content);
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        let startDel = start;
+        let endDel = end + 1;
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          startDel = startOfLines;
+          endDel = endOfLines;
+        }
+        const deletedText = content.substring(startDel, endDel);
+        const newText = content.substring(0, startDel) + content.substring(endDel);
+        setContent(newText);
+        setYankedText(deletedText);
+        onSyncClipboard(deletedText);
+        setCursorIndex(Math.min(startDel, Math.max(0, newText.length - 1)));
+        setMode('normal');
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? `Eliminati ${deletedText.length} caratteri.` : `Deleted ${deletedText.length} character(s).`);
+        return;
+      }
+
+      if (key === 'v' || key === 'V') {
+        setMode('normal');
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? '-- MODALITÀ NORMALE --' : '-- NORMAL MODE --');
+        return;
+      }
+
+      return;
+    }
+
+    // Normal Mode Key Intercepts
+    if (key === 'Z') {
+      if (commandBuffer === 'Z') {
+        onSaveFileState(filename, content);
+        setStatusMessage(lang === 'it' ? `[Scritto con ZZ] File "${filename}" salvato nel file system.` : `[Written with ZZ] File "${filename}" saved to file system.`);
+        setCommandBuffer('');
+      } else {
+        setCommandBuffer('Z');
+        setStatusMessage(lang === 'it' ? 'Comando: Z (Premi di nuovo Z per salvare)' : 'Command: Z (Press Z again to save)');
+      }
+      return;
+    }
+
+    if (commandBuffer === 'Z' && key !== 'Z') {
+      setCommandBuffer('');
+    }
+
+    // In Vim, '0' by itself (with empty count) is a motion (move to col 0).
+    // Digits 1-9 start a count multiplier; '0' only extends an already started count (e.g., 10j).
+    if (key === '0' && commandBuffer === '') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const nextIdx = getIndexFromLineCol(content, line, 0);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? 'Inizio riga (0)' : 'Start of line (0)');
+      return;
+    }
+
+    if (key === '^' && commandBuffer === '') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      const firstNonBlank = lineText.search(/\S/);
+      const targetCol = firstNonBlank >= 0 ? firstNonBlank : 0;
+      const nextIdx = getIndexFromLineCol(content, line, targetCol);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? 'Primo carattere non vuoto (^)' : 'First non-blank (^) ');
+      return;
+    }
+
+    if (/^[1-9]$/.test(key) || (key === '0' && /^[1-9]/.test(commandBuffer))) {
+      setCommandBuffer(prev => prev + key);
+      setStatusMessage(lang === 'it' ? `Comando: ${commandBuffer + key}` : `Command: ${commandBuffer + key}`);
+      return;
+    }
+
+    const countMatch = commandBuffer.match(/^([0-9]+)/);
+    const count = countMatch ? parseInt(countMatch[1], 10) : 1;
+    const actionBuffer = commandBuffer.replace(/^[0-9]+/, '');
+
+    if (key === '$') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      const endCol = Math.max(0, lineText.length - 1);
+      const nextIdx = getIndexFromLineCol(content, line, endCol);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? 'A inizio/fine riga ($)' : 'To end of line ($)');
+      return;
+    }
+    if (key === '0' && actionBuffer === '') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const nextIdx = getIndexFromLineCol(content, line, 0);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? 'A colonna 0 (0)' : 'To column 0 (0)');
+      return;
+    }
+    if (key === 'w' && actionBuffer === '') {
+      const nextIdx = moveWord(content, cursorIndex, count);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? `Avanti di ${count} parol${count > 1 ? 'e' : 'a'} (w)` : `Forward ${count} word(s) (w)`);
+      return;
+    }
+    if (key === 'b' && actionBuffer === '') {
+      const nextIdx = moveWordBack(content, cursorIndex, count);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? `Indietro di ${count} parol${count > 1 ? 'e' : 'a'} (b)` : `Backward ${count} word(s) (b)`);
+      return;
+    }
+    if (key === 'h' || key === 'ArrowLeft') {
+      const nextIdx = moveCursor(content, cursorIndex, 'left', count, 'normal');
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+    if (key === 'l' || key === 'ArrowRight') {
+      const nextIdx = moveCursor(content, cursorIndex, 'right', count, 'normal');
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+    if (key === 'j' || key === 'ArrowDown') {
+      const nextIdx = moveCursor(content, cursorIndex, 'down', count, 'normal');
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+    if (key === 'k' || key === 'ArrowUp') {
+      const nextIdx = moveCursor(content, cursorIndex, 'up', count, 'normal');
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'd') {
+      if (actionBuffer === 'd') {
+        pushToUndo(content);
+        const result = deleteLines(content, cursorIndex, count);
+        setContent(result.text);
+        setCursorIndex(result.nextIndex);
+        setYankedText(result.deleted);
+        onSyncClipboard(result.deleted);
+        setStatusMessage(lang === 'it' ? `Eliminate ${count} righe.` : `Deleted ${count} line(s).`);
+        setCommandBuffer('');
+      } else {
+        setCommandBuffer(commandBuffer + 'd');
+      }
+      return;
+    }
+
+    if (key === 'w' && actionBuffer === 'd') {
+      pushToUndo(content);
+      const result = deleteWords(content, cursorIndex, count);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setYankedText(result.deleted);
+      onSyncClipboard(result.deleted);
+      setStatusMessage(lang === 'it' ? `Eliminata parola.` : `Deleted word.`);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (actionBuffer === 'd' && key !== 'd' && key !== 'w') {
+      setCommandBuffer('');
+    }
+
+    if (actionBuffer === 'r' && key.length === 1) {
+      pushToUndo(content);
+      const before = content.substring(0, cursorIndex);
+      const after = content.substring(cursorIndex + 1);
+      const newText = before + key + after;
+      setContent(newText);
+      setStatusMessage(lang === 'it' ? `Sostituito carattere con '${key}'.` : `Replaced character with '${key}'.`);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'r' && actionBuffer === '') {
+      setCommandBuffer(commandBuffer + 'r');
+      setStatusMessage(lang === 'it' ? 'Sostituisci carattere (Premi un tasto)' : 'Replace character (Press key)');
+      return;
+    }
+
+    if (key === 'x') {
+      pushToUndo(content);
+      const result = deleteCharacterAt(content, cursorIndex);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? 'Cancellato carattere.' : 'Deleted character.');
+      return;
+    }
+
+    if (key === 'q' && actionBuffer === 'g') {
+      pushToUndo(content);
+      const result = reformatParagraph(content, cursorIndex, textwidth);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? `Paragrafo riformattato a ${textwidth} caratteri (gq).` : `Paragraph reformatted to ${textwidth} chars (gq).`);
+      return;
+    }
+
+    if (actionBuffer === 'z') {
+      const { line: curLine } = getLineColFromIndex(content, cursorIndex);
+      if (key === 'c') {
+        setFoldedLines(prev => new Set(prev).add(curLine));
+        setStatusMessage(lang === 'it' ? `Sezione/Riga ${curLine + 1} compressa (zc).` : `Line ${curLine + 1} folded (zc).`);
+      } else if (key === 'o') {
+        setFoldedLines(prev => {
+          const next = new Set(prev);
+          next.delete(curLine);
+          return next;
+        });
+        setStatusMessage(lang === 'it' ? `Sezione/Riga ${curLine + 1} espansa (zo).` : `Line ${curLine + 1} unfolded (zo).`);
+      } else if (key === 'a') {
+        setFoldedLines(prev => {
+          const next = new Set(prev);
+          if (next.has(curLine)) next.delete(curLine);
+          else next.add(curLine);
+          return next;
+        });
+        setStatusMessage(lang === 'it' ? `Sezione/Riga ${curLine + 1} invertita (za).` : `Line ${curLine + 1} toggled (za).`);
+      } else if (key === 'm') {
+        const lines = content.split('\n');
+        const allHeadings = new Set<number>();
+        lines.forEach((l, idx) => {
+          if (/^(#|\\section|def |class |function |<|\{)/.test(l.trim())) {
+            allHeadings.add(idx);
+          }
+        });
+        setFoldedLines(allHeadings);
+        setStatusMessage(lang === 'it' ? 'Tutte le sezioni compresse (zm).' : 'All folds closed (zm).');
+      } else if (key === 'r') {
+        setFoldedLines(new Set());
+        setStatusMessage(lang === 'it' ? 'Tutte le sezioni espanse (zr).' : 'All folds opened (zr).');
+      }
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'z' && actionBuffer === '') {
+      setCommandBuffer(commandBuffer + 'z');
+      setStatusMessage(lang === 'it' ? 'Comando Folding: c (chiudi), o (apri), a (commuta), m (tutti), r (reset)' : 'Fold command: c, o, a, m, r');
+      return;
+    }
+
+    if (key === 'i') {
+      setMode('insert');
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? '-- INSERIMENTO --' : '-- INSERT MODE --');
+      return;
+    }
+    if (key === 'a') {
+      setMode('insert');
+      setCommandBuffer('');
+      const nextIdx = moveCursor(content, cursorIndex, 'right', 1, 'insert');
+      setCursorIndex(nextIdx);
+      setStatusMessage(lang === 'it' ? '-- INSERIMENTO (APPEND) --' : '-- INSERT MODE (APPEND) --');
+      return;
+    }
+
+    if (key === 'v') {
+      setMode('visual');
+      setVisualAnchorIndex(cursorIndex);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? '-- VISUALE (Caratteri) --' : '-- VISUAL MODE (Chars) --');
+      return;
+    }
+    if (key === 'V') {
+      setMode('visual-line');
+      setVisualAnchorIndex(cursorIndex);
+      setCommandBuffer('');
+      setStatusMessage(lang === 'it' ? '-- VISUALE RIGA (Intere righe) --' : '-- VISUAL LINE MODE --');
+      return;
+    }
+
+    if (key === 'g') {
+      if (actionBuffer === 'g' || (countMatch && actionBuffer === '')) {
+        const lineDest = countMatch ? count - 1 : 0;
+        const nextIdx = getIndexFromLineCol(content, lineDest, 0);
+        setCursorIndex(nextIdx);
+        setStatusMessage(lang === 'it' ? `Vai alla riga ${lineDest + 1}` : `Go to line ${lineDest + 1}`);
+        setCommandBuffer('');
+      } else {
+        setCommandBuffer(commandBuffer + 'g');
+      }
+      return;
+    }
+
+    if (key === 'G') {
+      const lines = content.split('\n');
+      const lineDest = countMatch ? count - 1 : lines.length - 1;
+      const nextIdx = getIndexFromLineCol(content, lineDest, 0);
+      setCursorIndex(nextIdx);
+      setStatusMessage(lang === 'it' ? `Vai alla riga ${lineDest + 1}` : `Go to line ${lineDest + 1}`);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === '/') {
+      setMode('search');
+      setCommandInput('/');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === ':') {
+      setMode('command');
+      setCommandInput(':');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'n') {
+      const matches = searchResults.length > 0 ? searchResults : (searchQuery ? findSearchMatches(content, searchQuery) : []);
+      if (matches.length > 0) {
+        if (searchResults.length === 0) setSearchResults(matches);
+        const nextIdx = (activeSearchIdx + 1) % matches.length;
+        setActiveSearchIdx(nextIdx);
+        setCursorIndex(matches[nextIdx]);
+        setStatusMessage(lang === 'it' ? `Riscontro ${nextIdx + 1} di ${matches.length} per "${searchQuery}"` : `Match ${nextIdx + 1} of ${matches.length} for "${searchQuery}"`);
+      } else {
+        setStatusMessage(lang === 'it' ? 'Nessuna ricerca attiva o nessun riscontro. Usa / per cercare.' : 'No active search or no matches. Use / to search.');
+      }
+      return;
+    }
+
+    if (key === 'N') {
+      const matches = searchResults.length > 0 ? searchResults : (searchQuery ? findSearchMatches(content, searchQuery) : []);
+      if (matches.length > 0) {
+        if (searchResults.length === 0) setSearchResults(matches);
+        const prevIdx = (activeSearchIdx - 1 + matches.length) % matches.length;
+        setActiveSearchIdx(prevIdx);
+        setCursorIndex(matches[prevIdx]);
+        setStatusMessage(lang === 'it' ? `Riscontro ${prevIdx + 1} di ${matches.length} per "${searchQuery}"` : `Match ${prevIdx + 1} of ${matches.length} for "${searchQuery}"`);
+      } else {
+        setStatusMessage(lang === 'it' ? 'Nessuna ricerca attiva o nessun riscontro. Usa / per cercare.' : 'No active search or no matches. Use / to search.');
+      }
+      return;
+    }
+
+    if (key === 'u') {
+      if (undoHistory.length > 0) {
+        const previousText = undoHistory[undoHistory.length - 1];
+        setUndoHistory(prev => prev.slice(0, -1));
+        setRedoHistory(prev => [...prev, content]);
+        setContent(previousText);
+        setCursorIndex(Math.min(cursorIndex, previousText.length));
+        setStatusMessage(lang === 'it' ? 'Modifica annullata.' : 'Undo applied.');
+      } else {
+        setStatusMessage(lang === 'it' ? 'Già alla modifica più vecchia.' : 'Already at oldest change.');
+      }
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === '.') {
+      if (redoHistory.length > 0) {
+        const nextText = redoHistory[redoHistory.length - 1];
+        setRedoHistory(prev => prev.slice(0, -1));
+        setUndoHistory(prev => [...prev, content]);
+        setContent(nextText);
+        setCursorIndex(Math.min(cursorIndex, nextText.length));
+        setStatusMessage(lang === 'it' ? 'Modifica ripristinata.' : 'Redo applied.');
+      } else {
+        setStatusMessage(lang === 'it' ? 'Nessuna modifica da ripristinare.' : 'Nothing to redo.');
+      }
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'y') {
+      const lines = content.split('\n');
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const lineText = lines[line] || '';
+      setYankedText(lineText + '\n');
+      onSyncClipboard(lineText + '\n');
+      setStatusMessage(lang === 'it' ? 'Riga copiata (Yanked).' : 'Line copied (Yanked).');
+      return;
+    }
+
+    if (key === 'p') {
+      if (yankedText) {
+        pushToUndo(content);
+        const isLineWise = yankedText.endsWith('\n');
+        if (isLineWise) {
+          const lines = content.split('\n');
+          const { line } = getLineColFromIndex(content, cursorIndex);
+          const insertLine = line + 1;
+          lines.splice(insertLine, 0, yankedText.replace(/\n$/, ''));
+          const newText = sanitizeText(lines.join('\n'));
+          setContent(newText);
+          const nextIdx = getIndexFromLineCol(newText, insertLine, 0);
+          setCursorIndex(nextIdx);
+        } else {
+          const insertPos = Math.min(cursorIndex + 1, content.length);
+          const before = content.substring(0, insertPos);
+          const after = content.substring(insertPos);
+          const newText = sanitizeText(before + yankedText + after);
+          setContent(newText);
+          setCursorIndex(insertPos + yankedText.length - 1);
+        }
+        setStatusMessage(lang === 'it' ? 'Testo incollato.' : 'Text pasted.');
+      } else {
+        externalClipboardText().then(extText => {
+          if (extText) {
+            pushToUndo(content);
+            const sanitizedExt = sanitizeText(extText);
+            const insertPos = Math.min(cursorIndex + 1, content.length);
+            const before = content.substring(0, insertPos);
+            const after = content.substring(insertPos);
+            const newText = before + sanitizedExt + after;
+            setContent(newText);
+            setCursorIndex(insertPos + sanitizedExt.length - 1);
+            setStatusMessage(lang === 'it' ? 'Testo incollato dagli appunti.' : 'Text pasted from clipboard.');
+          } else {
+            setStatusMessage(lang === 'it' ? 'Buffer vuoto.' : 'Buffer empty.');
+          }
+        }).catch(() => {
+          setStatusMessage(lang === 'it' ? 'Nessun testo da incollare.' : 'No text to paste.');
+        });
+      }
+      return;
+    }
+  };
+
+  // Vim Key Handler (Standard Hardware Keyboard)
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // ESC key MUST ALWAYS be caught regardless of current mode
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      processVimKey('Escape');
+      return;
+    }
+
+    if (mode !== 'insert' && mode !== 'command' && mode !== 'search') {
+      if (e.key !== 'Unidentified' && e.key !== 'Process') {
+        e.preventDefault();
+        processVimKey(e.key);
+      }
+    }
+  };
+
+  // Mobile BeforeInput Handler (Intercepts Pixel 7a Chrome Gboard keypresses)
+  const handleBeforeInput = (e: React.FormEvent<HTMLTextAreaElement> & { data?: string }) => {
+    if (mode !== 'insert' && mode !== 'command' && mode !== 'search') {
+      const typedData = e.data;
+      if (typedData) {
+        e.preventDefault();
+        for (const char of typedData) {
+          processVimKey(char);
+        }
+      }
+    }
+  };
+
+  // Helper trigger to handle external toolbar keys simulated into LiViA
+  const handleSimulatedKeyPress = (key: string) => {
+    if (key === 'Escape') {
+      const prevMode = mode;
+      setMode('normal');
+      setCommandBuffer('');
+      setCommandInput('');
+      setStatusMessage(lang === 'it' ? '-- MODALITÀ NORMALE --' : '-- NORMAL MODE --');
+      
+      // Move cursor left 1 char when exiting Insert Mode, preventing block cursor on newline
+      const { line, col } = getLineColFromIndex(content, cursorIndex);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      if (lineText.length > 0 && col >= lineText.length) {
+        setCursorIndex(getIndexFromLineCol(content, line, lineText.length - 1));
+      } else if (lineText.length > 0 && col > 0 && prevMode === 'insert') {
+        setCursorIndex(getIndexFromLineCol(content, line, col - 1));
+      }
+      
+      focusEditor();
+      return;
+    }
+
+    if (key === 'i') {
+      setMode('insert');
+      setStatusMessage(lang === 'it' ? '-- INSERIMENTO --' : '-- INSERT --');
+      focusEditor();
+      return;
+    }
+
+    if (key === 'v') {
+      if (mode === 'visual') {
+        setMode('normal');
+        setStatusMessage(lang === 'it' ? '-- MODALITÀ NORMALE --' : '-- NORMAL MODE --');
+      } else {
+        setMode('visual');
+        setVisualAnchorIndex(cursorIndex);
+        setStatusMessage(lang === 'it' ? '-- VISUALE --' : '-- VISUAL --');
+      }
+      focusEditor();
+      return;
+    }
+
+    if (key === 'V') {
+      if (mode === 'visual-line') {
+        setMode('normal');
+        setStatusMessage(lang === 'it' ? '-- MODALITÀ NORMALE --' : '-- NORMAL MODE --');
+      } else {
+        setMode('visual-line');
+        setVisualAnchorIndex(cursorIndex);
+        setStatusMessage(lang === 'it' ? '-- VISUALE RIGA --' : '-- VISUAL LINE --');
+      }
+      focusEditor();
+      return;
+    }
+
+    if (key === ':') {
+      setMode('command');
+      setCommandInput(':');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === '/') {
+      setMode('search');
+      setCommandInput('/');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'gg') {
+      const lineDest = 0;
+      const nextIdx = getIndexFromLineCol(content, lineDest, 0);
+      setCursorIndex(nextIdx);
+      setStatusMessage(lang === 'it' ? `Vai alla riga ${lineDest + 1}` : `Go to line ${lineDest + 1}`);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'G') {
+      const lines = content.split('\n');
+      const nextIdx = getIndexFromLineCol(content, Math.max(0, lines.length - 1), 0);
+      setCursorIndex(nextIdx);
+      setStatusMessage(lang === 'it' ? `Vai all'ultima riga` : `Go to last line`);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'w') {
+      const nextIdx = moveWord(content, cursorIndex, 1);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === '0') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      setCursorIndex(getIndexFromLineCol(content, line, 0));
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === '$') {
+      const { line } = getLineColFromIndex(content, cursorIndex);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      const maxCol = (mode === 'insert' || mode === 'visual' || mode === 'visual-line') ? lineText.length : Math.max(0, lineText.length - 1);
+      setCursorIndex(getIndexFromLineCol(content, line, maxCol));
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'dd' && mode === 'normal') {
+      pushToUndo(content);
+      const result = deleteLines(content, cursorIndex, 1);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setYankedText(result.deleted);
+      onSyncClipboard(result.deleted);
+      setStatusMessage(lang === 'it' ? 'Eliminata 1 riga.' : 'Deleted 1 line.');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'dw' && mode === 'normal') {
+      pushToUndo(content);
+      const result = deleteWords(content, cursorIndex, 1);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setYankedText(result.deleted);
+      onSyncClipboard(result.deleted);
+      setStatusMessage(lang === 'it' ? 'Eliminata parola.' : 'Deleted word.');
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'x' && mode === 'normal') {
+      pushToUndo(content);
+      const result = deleteChar(content, cursorIndex);
+      setContent(result.text);
+      setCursorIndex(result.nextIndex);
+      setStatusMessage(lang === 'it' ? 'Carattere cancellato (x).' : 'Character deleted (x).');
+      setCommandBuffer('');
+      return;
+    }
+    
+    if (key === 'b') {
+      const nextIdx = moveWordBack(content, cursorIndex, 1);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'h' || key === 'ArrowLeft') {
+      const nextIdx = moveCursor(content, cursorIndex, 'left', 1, mode);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'j' || key === 'ArrowDown') {
+      const nextIdx = moveCursor(content, cursorIndex, 'down', 1, mode);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'k' || key === 'ArrowUp') {
+      const nextIdx = moveCursor(content, cursorIndex, 'up', 1, mode);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'l' || key === 'ArrowRight') {
+      const nextIdx = moveCursor(content, cursorIndex, 'right', 1, mode);
+      setCursorIndex(nextIdx);
+      setCommandBuffer('');
+      return;
+    }
+
+    if (key === 'y') {
+      if (mode === 'visual' || mode === 'visual-line') {
+        let selectedText = '';
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          selectedText = content.substring(startOfLines, endOfLines);
+        } else {
+          selectedText = content.substring(start, end + 1);
+        }
+        setYankedText(selectedText);
+        onSyncClipboard(selectedText);
+        setMode('normal');
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? `Testo copiato negli appunti: ${selectedText.length} caratteri.` : `Yanked ${selectedText.length} chars.`);
+        return;
+      } else {
+        const { line } = getLineColFromIndex(content, cursorIndex);
+        const lines = content.split('\n');
+        const lineText = (lines[line] || '') + '\n';
+        setYankedText(lineText);
+        onSyncClipboard(lineText);
+        setStatusMessage(lang === 'it' ? 'Riga copiata (yy).' : 'Line yanked (yy).');
+        return;
+      }
+    }
+
+    if (key === 'd') {
+      if (mode === 'visual' || mode === 'visual-line') {
+        pushToUndo(content);
+        const start = Math.min(visualAnchorIndex, cursorIndex);
+        const end = Math.max(visualAnchorIndex, cursorIndex);
+        let startDel = start;
+        let endDel = end + 1;
+        if (mode === 'visual-line') {
+          const { startOfLines, endOfLines } = getVisualLineBounds(content, start, end);
+          startDel = startOfLines;
+          endDel = endOfLines;
+        }
+        const deletedText = content.substring(startDel, endDel);
+        const newText = content.substring(0, startDel) + content.substring(endDel);
+        setContent(newText);
+        setYankedText(deletedText);
+        onSyncClipboard(deletedText);
+        setCursorIndex(Math.min(startDel, Math.max(0, newText.length - 1)));
+        setMode('normal');
+        setCommandBuffer('');
+        setStatusMessage(lang === 'it' ? `Eliminati ${deletedText.length} caratteri.` : `Deleted ${deletedText.length} character(s).`);
+        return;
+      }
+    }
+
+    if (key === 'p') {
+      if (yankedText) {
+        pushToUndo(content);
+        const before = content.substring(0, cursorIndex + (mode === 'normal' ? 1 : 0));
+        const after = content.substring(cursorIndex + (mode === 'normal' ? 1 : 0));
+        setContent(before + yankedText + after);
+        setCursorIndex(cursorIndex + yankedText.length);
+        setStatusMessage(lang === 'it' ? 'Incollato dagli appunti interni.' : 'Pasted from internal buffer.');
+        return;
+      } else {
+        externalClipboardText().then(extText => {
+          if (extText) {
+            pushToUndo(content);
+            const before = content.substring(0, cursorIndex);
+            const after = content.substring(cursorIndex);
+            setContent(before + extText + after);
+            setCursorIndex(cursorIndex + extText.length);
+            setStatusMessage(lang === 'it' ? 'Testo incollato dagli appunti.' : 'Text pasted from clipboard.');
+          } else {
+            setStatusMessage(lang === 'it' ? 'Buffer vuoto.' : 'Buffer empty.');
+          }
+        }).catch(() => {
+          setStatusMessage(lang === 'it' ? 'Nessun testo da incollare.' : 'No text to paste.');
+        });
+        return;
+      }
+    }
+
+    if (key === 'u' || key === '.' || key === 'n' || key === 'N') {
+      processVimKey(key);
+      return;
+    }
+    
+    // Simulate keyboard event payload fallback
+    processVimKey(key);
+  };
+
+  const executeAsyncCommand = async (cmd: string) => {
+    setStatusMessage(lang === 'it' ? 'Gemini sta elaborando...' : 'Gemini is processing...');
+    
+    const isTranslate = cmd.startsWith(':translate ') || cmd.startsWith(':tr ') || cmd.startsWith(':traduci ');
+    const isGemini = cmd.startsWith(':gemini ') || cmd.startsWith(':gem ');
+    const isLatin = cmd === ':lat' || cmd.startsWith(':lat ');
+
+    try {
+      if (isTranslate) {
+        let langArg = "";
+        if (cmd.startsWith(':translate ')) langArg = cmd.substring(11).trim();
+        else if (cmd.startsWith(':tr ')) langArg = cmd.substring(4).trim();
+        else if (cmd.startsWith(':traduci ')) langArg = cmd.substring(9).trim();
+
+        if (!langArg) {
+          setStatusMessage(lang === 'it' ? 'Specifica una lingua (es. :tr inglese)' : 'Specify a language (e.g. :tr english)');
+          return;
+        }
+
+        let textToProcess = content;
+        let isSelection = false;
+        let selStart = 0;
+        let selEnd = 0;
+
+        if (mode === 'visual' || mode === 'visual-line') {
+          isSelection = true;
+          const rawStart = Math.min(visualAnchorIndex, cursorIndex);
+          const rawEnd = Math.max(visualAnchorIndex, cursorIndex);
+          if (mode === 'visual-line') {
+            const { startOfLines, endOfLines } = getVisualLineBounds(content, rawStart, rawEnd);
+            selStart = startOfLines;
+            selEnd = endOfLines;
+          } else {
+            selStart = rawStart;
+            selEnd = Math.min(rawEnd + 1, content.length);
+          }
+          textToProcess = content.substring(selStart, selEnd);
+        }
+
+        const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
+        const res = await fetch("/api/gemini/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "translate",
+            text: textToProcess,
+            targetLanguage: langArg,
+            userApiKey
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error || "Errore API di traduzione");
+        }
+
+        const data = await res.json();
+        const translatedText = data.result;
+
+        pushToUndo(content);
+        if (isSelection) {
+          const newContent = content.substring(0, selStart) + translatedText + content.substring(selEnd);
+          setContent(newContent);
+          setCursorIndex(selStart);
+          setStatusMessage(lang === 'it' ? `Selezione tradotta in ${langArg}.` : `Selection translated to ${langArg}.`);
+        } else {
+          setContent(translatedText);
+          setCursorIndex(0);
+          setStatusMessage(lang === 'it' ? `Documento tradotto in ${langArg}.` : `Document translated to ${langArg}.`);
+        }
+        setMode('normal');
+      }
+
+      else if (isGemini) {
+        let promptArg = "";
+        if (cmd.startsWith(':gemini ')) promptArg = cmd.substring(8).trim();
+        else if (cmd.startsWith(':gem ')) promptArg = cmd.substring(5).trim();
+
+        if (!promptArg) {
+          setStatusMessage(lang === 'it' ? 'Specifica istruzioni per Gemini (es. :gem correggi bozza)' : 'Specify instructions for Gemini (e.g. :gem proofread)');
+          return;
+        }
+
+        let textToProcess = content;
+        let isSelection = false;
+        let selStart = 0;
+        let selEnd = 0;
+
+        if (mode === 'visual' || mode === 'visual-line') {
+          isSelection = true;
+          const rawStart = Math.min(visualAnchorIndex, cursorIndex);
+          const rawEnd = Math.max(visualAnchorIndex, cursorIndex);
+          if (mode === 'visual-line') {
+            const { startOfLines, endOfLines } = getVisualLineBounds(content, rawStart, rawEnd);
+            selStart = startOfLines;
+            selEnd = endOfLines;
+          } else {
+            selStart = rawStart;
+            selEnd = Math.min(rawEnd + 1, content.length);
+          }
+          textToProcess = content.substring(selStart, selEnd);
+        }
+
+        const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
+        const res = await fetch("/api/gemini/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "prompt",
+            text: textToProcess,
+            prompt: promptArg,
+            modelTier: geminiModel,
+            userApiKey
+          })
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error || "Errore API Gemini");
+        }
+
+        const data = await res.json();
+        const processedText = data.result;
+
+        pushToUndo(content);
+        if (isSelection) {
+          const newContent = content.substring(0, selStart) + processedText + content.substring(selEnd);
+          setContent(newContent);
+          setCursorIndex(selStart);
+          setStatusMessage(lang === 'it' ? 'Selezione elaborata con successo.' : 'Selection processed successfully.');
+        } else {
+          setContent(processedText);
+          setCursorIndex(0);
+          setStatusMessage(lang === 'it' ? 'Documento elaborato con successo.' : 'Document processed successfully.');
+        }
+        setMode('normal');
+      }
+
+      else if (isLatin) {
+        let themeArg = "";
+        if (cmd.startsWith(':lat ')) {
+          themeArg = cmd.substring(5).trim();
+        }
+
+        const localLatinFallback = [
+          { loc: "Audentes fortuna iuvat", tr: "La fortuna aiuta gli audaci", comm: "Celebre esortazione di Virgilio nell'Eneide, adatta a superare le difficoltà con audacia." },
+          { loc: "Amor vincit omnia", tr: "L'amore vince ogni cosa", comm: "Scritta da Virgilio nelle Egloghe, celebra il potere universale del sentimento amoroso." },
+          { loc: "Carpe diem", tr: "Cogli l'attimo", comm: "Famoso verso del poeta Orazio, invito a vivere appieno ogni giorno senza riporre speranze nel futuro." },
+          { loc: "Cogito ergo sum", tr: "Penso, dunque sono", comm: "Formula cartesiana che sintetizza il dubbio metodico, base del razionalismo moderno." },
+          { loc: "In medio stat virtus", tr: "La virtù sta nel mezzo", comm: "Insegnamento aristotelico medievale, invito a evitare gli estremi e a cercare la moderazione." },
+          { loc: "Per aspera ad astra", tr: "Attraverso le asperità sino alle stelle", comm: "Motto classico indicante che la via verso il successo e la gloria richiede impegno e sacrificio." }
+        ];
+
+        let latinPhrase = "";
+        let translation = "";
+        let commentary = "";
+
+        try {
+          const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
+          const res = await fetch("/api/gemini/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action: "latin",
+              theme: themeArg,
+              userApiKey
+            })
+          });
+
+          if (!res.ok) throw new Error("API Offline");
+          const data = await res.json();
+          const lines = data.result.split('\n').filter((l: string) => l.trim().length > 0);
+          if (lines.length >= 2) {
+            latinPhrase = lines[0].replace(/^"|"$/g, '').trim();
+            translation = lines[1].replace(/^"|"$/g, '').trim();
+            commentary = lines[2] ? lines[2].replace(/^"|"$/g, '').trim() : "";
+          } else {
+            throw new Error("Formato non valido");
+          }
+        } catch (e) {
+          const selected = localLatinFallback[Math.floor(Math.random() * localLatinFallback.length)];
+          latinPhrase = selected.loc;
+          translation = selected.tr;
+          commentary = selected.comm;
+        }
+
+        pushToUndo(content);
+        const textToInsert = `\n"${latinPhrase}"\n» ${translation}\n— ${commentary}\n`;
+        const newContent = content.substring(0, cursorIndex) + textToInsert + content.substring(cursorIndex);
+        setContent(newContent);
+        setCursorIndex(cursorIndex + textToInsert.length);
+        setStatusMessage(lang === 'it' ? 'Locuzione latina inserita!' : 'Latin phrase inserted!');
+        setMode('normal');
+      }
+    } catch (err: any) {
+      console.error(err);
+      setStatusMessage(lang === 'it' 
+        ? `Errore AI: ${err.message || 'Controlla la chiave API'}` 
+        : `AI Error: ${err.message || 'Check API key'}`);
+    } finally {
+      focusEditor();
+    }
+  };
+
+  // Process Command Line (activated on hitting Enter inside Command mode)
+  const handleCommandSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cmd = commandInput.trim();
+    saveToCommandHistory(cmd);
+    setMode('normal');
+
+    // Handle asynchronous AI commands first
+    const isAICommand = 
+      cmd.startsWith(':translate ') || cmd.startsWith(':tr ') || cmd.startsWith(':traduci ') ||
+      cmd.startsWith(':gemini ') || cmd.startsWith(':gem ') ||
+      cmd === ':lat' || cmd.startsWith(':lat ');
+
+    if (isAICommand) {
+      executeAsyncCommand(cmd);
+      setCommandInput('');
+      return;
+    }
+
+    if (cmd === ':gdoc' || cmd === ':gdocs' || cmd === ':copygdoc') {
+      copyFormattedForGoogleDocs(content);
+      setStatusMessage(lang === 'it' ? 'Copiato formattato per Google Docs (pronto per Ctrl+V in Google Docs)!' : 'Copied formatted for Google Docs!');
+      if (onOpenGoogleDocsModal) onOpenGoogleDocsModal();
+      setCommandInput('');
+      setMode('normal');
+      return;
+    }
+
+    if (cmd === ':q') {
+      const savedContent = onReadFileState(filename);
+      const isModified = savedContent === null ? content.length > 0 : content !== savedContent;
+      if (isModified) {
+        setStatusMessage(lang === 'it' 
+          ? 'Errore: Nessun salvataggio dall\'ultima modifica (aggiungi ! per scartare)' 
+          : 'Error: No write since last change (add ! to override)');
+      } else {
+        setContent('');
+        setCursorIndex(0);
+        setStatusMessage(lang === 'it' ? 'File chiuso.' : 'File closed.');
+      }
+    } else if (cmd === ':q!') {
+      setContent('');
+      setCursorIndex(0);
+      setStatusMessage(lang === 'it' ? 'File chiuso (svuotato) senza salvare.' : 'Document closed (cleared) without saving.');
+    } else if (cmd.startsWith(':s/') || cmd.startsWith(':%s/')) {
+      pushToUndo(content);
+      const result = executeSearchAndReplace(content, cursorIndex, cmd, lang);
+      if (result.success) {
+        setContent(result.text);
+        setStatusMessage(result.message);
+      } else {
+        setStatusMessage(result.message);
+      }
+    } else if (cmd === ':w' || cmd.startsWith(':w ')) {
+      const parts = cmd.split(' ');
+      const targetFilename = parts[1] ? parts[1].trim() : filename;
+      onSaveFileState(targetFilename, content);
+      setStatusMessage(lang === 'it' ? `[Scritto] File "${targetFilename}" salvato con successo.` : `[Written] File "${targetFilename}" saved successfully.`);
+    } else if (cmd === ':e' || cmd.startsWith(':e ') || cmd.startsWith(':e!') || cmd.startsWith(':e/') || cmd === ':edit' || cmd.startsWith(':edit ')) {
+      let targetName = '';
+      if (cmd.startsWith(':edit! ')) targetName = cmd.substring(7).trim();
+      else if (cmd.startsWith(':edit ')) targetName = cmd.substring(6).trim();
+      else if (cmd.startsWith(':e! ')) targetName = cmd.substring(4).trim();
+      else if (cmd.startsWith(':e!')) targetName = cmd.substring(3).trim();
+      else if (cmd.startsWith(':e ')) targetName = cmd.substring(3).trim();
+      else if (cmd.startsWith(':e/')) targetName = cmd.substring(2).trim();
+
+      targetName = targetName.replace(/^["']|["']$/g, '').trim();
+
+      if (!targetName) {
+        targetName = filename;
+      }
+
+      if (onOpenFileState) {
+        const res = onOpenFileState(targetName);
+        if (res.found) {
+          setStatusMessage(lang === 'it' ? `[Aperto] File "${res.name}" aperto.` : `[Opened] File "${res.name}" opened.`);
+        } else {
+          setStatusMessage(lang === 'it' ? `[Nuovo File] "${res.name}" creato nel workspace.` : `[New File] "${res.name}" created in workspace.`);
+        }
+      }
+    } else if (cmd.startsWith(':r ')) {
+      const parts = cmd.split(' ');
+      const targetFilename = parts[1] ? parts[1].trim() : '';
+      if (!targetFilename) {
+        setStatusMessage(lang === 'it' ? 'Errore: specifica un nome file per :r.' : 'Error: specify a file name for :r.');
+      } else {
+        const fileContent = onReadFileState(targetFilename);
+        if (fileContent !== null) {
+          pushToUndo(content);
+          
+          // Insert file content after the cursor line
+          const lines = content.split('\n');
+          const { line } = getLineColFromIndex(content, cursorIndex);
+          lines.splice(line + 1, 0, fileContent);
+          const newText = lines.join('\n');
+          
+          setContent(newText);
+          const nextIdx = getIndexFromLineCol(newText, line + 1, 0);
+          setCursorIndex(nextIdx);
+          setStatusMessage(lang === 'it' ? `[Letto] Inserite le righe da "${targetFilename}".` : `[Read] Inserted lines from "${targetFilename}".`);
+        } else {
+          setStatusMessage(lang === 'it' ? `Errore: file "${targetFilename}" non trovato nel File System.` : `Error: file "${targetFilename}" not found in File System.`);
+        }
+      }
+    } else if (parseKeyFromVimCommand(cmd).isKeyCmd) {
+      const keyRes = parseKeyFromVimCommand(cmd);
+      if (keyRes.action === 'status') {
+        const currentSaved = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+        if (currentSaved) {
+          const masked = currentSaved.length > 8 ? currentSaved.substring(0, 4) + '...' + currentSaved.substring(currentSaved.length - 4) : '***';
+          setStatusMessage(lang === 'it' 
+            ? `✓ Chiave API Gemini attiva: ${masked}. (Usa :set key=clear per ripristinare i Secret)` 
+            : `✓ Local Gemini API key active: ${masked}. (Use :set key=clear to reset to Secrets)`);
+        } else {
+          setStatusMessage(lang === 'it' 
+            ? 'Nessuna chiave locale salvata. L\'editor utilizza la chiave di sistema dei Secret della piattaforma.' 
+            : 'No local key saved. Editor uses platform system Secrets key.');
+        }
+      } else if (keyRes.action === 'clear') {
+        localStorage.removeItem('livia_custom_gemini_key');
+        setStatusMessage(lang === 'it' 
+          ? '✓ Chiave API personalizzata rimossa! L\'editor ora utilizza i Secret della piattaforma.' 
+          : '✓ Custom API Key cleared! Editor now uses platform system Secrets.');
+      } else if (keyRes.action === 'set' && keyRes.value) {
+        localStorage.setItem('livia_custom_gemini_key', keyRes.value);
+        const masked = keyRes.value.length > 8 ? keyRes.value.substring(0, 4) + '...' + keyRes.value.substring(keyRes.value.length - 4) : '***';
+        setStatusMessage(lang === 'it' 
+          ? `✓ Chiave API Gemini salvata con successo (${masked})! Ora usata per tutte le funzioni AI.` 
+          : `✓ Personal Gemini API Key saved (${masked})! Now active for all AI commands.`);
+      }
+    } else if (cmd.startsWith(':set ')) {
+      const param = cmd.substring(5).trim();
+      if (param.startsWith('textwidth=') || param.startsWith('tw=') || param.startsWith('length=')) {
+        const val = parseInt(param.split('=')[1], 10);
+        if (!isNaN(val) && val > 10) {
+          setTextwidth(val);
+          setStatusMessage(lang === 'it' ? `Larghezza testo impostata a ${val} caratteri.` : `Text width set to ${val} chars.`);
+        }
+      } else if (param === 'syntax=on' || param === 'syntax=1') {
+        setStatusMessage(lang === 'it' ? 'Evidenziazione sintassi attivata.' : 'Syntax highlighting enabled.');
+      } else if (param === 'syntax=off' || param === 'syntax=0') {
+        setStatusMessage(lang === 'it' ? 'Evidenziazione sintassi disattivata.' : 'Syntax highlighting disabled.');
+      } else if (param === 'folding=on' || param === 'fold') {
+        setFoldingEnabled(true);
+        setStatusMessage(lang === 'it' ? 'Folding del codice attivato.' : 'Code folding enabled.');
+      } else if (param === 'folding=off' || param === 'nofold') {
+        setFoldingEnabled(false);
+        setStatusMessage(lang === 'it' ? 'Folding del codice disattivato.' : 'Code folding disabled.');
+      } else if (
+        param === 'model' || param === 'model?' || param === 'model status' || param === 'model check' ||
+        param === 'tier' || param === 'tier?'
+      ) {
+        const modelLabel = geminiModel === 'pro' ? 'Gemini Pro (Advanced Reasoning)' : 'Gemini Flash (Fast / Free)';
+        const switchHint = geminiModel === 'pro' ? ':set model=flash' : ':set model=pro';
+        setStatusMessage(lang === 'it'
+          ? `✓ Modello AI attivo: ${modelLabel}. (Usa ${switchHint} per cambiare)`
+          : `✓ Active AI Model: ${modelLabel}. (Use ${switchHint} to switch)`);
+      } else if (param === 'model=flash' || param === 'model=2.5-flash' || param === 'model=3.6-flash' || param === 'model=flash-lite') {
+        setGeminiModel('flash');
+        setStatusMessage(lang === 'it' ? '✓ Modello AI impostato su Gemini Flash (Veloce/Free).' : '✓ AI model set to Gemini Flash (Fast/Free).');
+      } else if (param === 'model=pro' || param === 'model=2.5-pro' || param === 'model=3.1-pro' || param === 'model=1.5-pro') {
+        setGeminiModel('pro');
+        setStatusMessage(lang === 'it' ? '✓ Modello AI impostato su Gemini Pro (Ragionamento Avanzato).' : '✓ AI model set to Gemini Pro (Advanced Reasoning).');
+      } else if (param === 'lang' || param === 'lang?' || param === 'language' || param === 'language?') {
+        const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
+        const switchCmd = lang === 'it' ? ':set lang=en' : ':set lang=it';
+        setStatusMessage(lang === 'it'
+          ? `✓ Lingua attiva: ${currLangName}. (Usa ${switchCmd} per cambiare)`
+          : `✓ Active Language: ${currLangName}. (Use ${switchCmd} to switch)`);
+      } else if (param === 'lang=it' || param === 'language=it' || param === 'it') {
+        if (setLang) setLang('it');
+        setStatusMessage('✓ Lingua impostata su Italiano (IT).');
+      } else if (param === 'lang=en' || param === 'language=en' || param === 'en') {
+        if (setLang) setLang('en');
+        setStatusMessage('✓ Language set to English (EN).');
+      } else if (param === 'credits' || param === 'quota' || param === 'limits') {
+        const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+        if (customKey) {
+          setStatusMessage(lang === 'it'
+            ? '✓ Chiave API personale attiva. Controlla il consumo esatto su: https://aistudio.google.com/app/apikey'
+            : '✓ Personal API key active. Check exact usage & quotas at: https://aistudio.google.com/app/apikey');
+        } else {
+          setStatusMessage(lang === 'it'
+            ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita con limite condiviso). Aggiungi una tua API Key personale in Impostazioni per quota illimitata.'
+            : '✓ You are using the shared platform Secret API key (Free tier). Set your personal API Key in Settings for dedicated quota.');
+        }
+      } else {
+        setStatusMessage(lang === 'it' ? `Opzione impostata: ${param}` : `Option set: ${param}`);
+      }
+    } else if (cmd === ':model' || cmd === ':model?' || cmd === ':tier' || cmd === ':tier?') {
+      const modelLabel = geminiModel === 'pro' ? 'Gemini Pro (Advanced Reasoning)' : 'Gemini Flash (Fast / Free)';
+      const switchHint = geminiModel === 'pro' ? ':set model=flash' : ':set model=pro';
+      setStatusMessage(lang === 'it'
+        ? `✓ Modello AI attivo: ${modelLabel}. (Usa ${switchHint} per cambiare)`
+        : `✓ Active AI Model: ${modelLabel}. (Use ${switchHint} to switch)`);
+    } else if (cmd === ':lang' || cmd === ':lang?' || cmd === ':language' || cmd === ':language?') {
+      const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
+      const switchCmd = lang === 'it' ? ':set lang=en' : ':set lang=it';
+      setStatusMessage(lang === 'it'
+        ? `✓ Lingua attiva: ${currLangName}. (Usa ${switchCmd} per cambiare)`
+        : `✓ Active Language: ${currLangName}. (Use ${switchCmd} to switch)`);
+    } else if (cmd === ':credits' || cmd === ':quota' || cmd === ':limits') {
+      const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+      if (customKey) {
+        setStatusMessage(lang === 'it'
+          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su: https://aistudio.google.com/app/apikey'
+          : '✓ Personal API key active. Check exact usage & quotas at: https://aistudio.google.com/app/apikey');
+      } else {
+        setStatusMessage(lang === 'it'
+          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita con limite condiviso). Aggiungi una tua API Key personale in Impostazioni per quota illimitata.'
+          : '✓ You are using the shared platform Secret API key (Free tier). Set your personal API Key in Settings for dedicated quota.');
+      }
+    } else if (cmd === ':help' || cmd === ':he' || cmd === ':h' || cmd.startsWith(':help ') || cmd.startsWith(':he ') || cmd.startsWith(':h ')) {
+      let topic = '';
+      if (cmd.startsWith(':help ')) topic = cmd.substring(6).trim();
+      else if (cmd.startsWith(':he ')) topic = cmd.substring(4).trim();
+      else if (cmd.startsWith(':h ')) topic = cmd.substring(3).trim();
+
+      if (onShowHelp) {
+        onShowHelp(topic);
+        if (topic) {
+          setStatusMessage(lang === 'it' ? `[Aiuto] Guida per "${topic}" aperta.` : `[Help] Guide for "${topic}" opened.`);
+        } else {
+          setStatusMessage(lang === 'it' ? '[Aiuto] Guida comandi e configurazione .lvarc aperta.' : '[Help] Command guide and .lvarc configuration opened.');
+        }
+      } else {
+        setStatusMessage(lang === 'it' ? 'Barra della Guida disponibile sul lato destro.' : 'Help sidebar available on the right.');
+      }
+    } else {
+      setStatusMessage(lang === 'it' ? `Comando sconosciuto: ${cmd}` : `Unknown command: ${cmd}`);
+    }
+    setCommandInput('');
+    focusEditor();
+  };
+
+  // Process Search (activated on hitting Enter inside Search mode)
+  const handleSearchSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const query = commandInput.substring(1); // remove '/'
+    saveToCommandHistory('/' + query);
+    setSearchQuery(query);
+    setMode('normal');
+    executeSearch(query);
+    setCommandInput('');
+    focusEditor();
+  };
+
+  // Synchronize cursor position when clicking or selecting on textarea
+  const handleSelect = (e: React.SyntheticEvent<HTMLTextAreaElement>) => {
+    if (isProgrammaticSelectionRef.current) {
+      return;
+    }
+    
+    // Only process select events triggered by direct user pointer interaction for non-insert modes
+    if (mode !== 'insert') {
+      if (!isUserPointerDownRef.current) {
+        return;
+      }
+      isUserPointerDownRef.current = false;
+    }
+
+    let start = e.currentTarget.selectionStart;
+
+    if (mode === 'normal') {
+      // Prevent normal-mode cursor from landing on newline index upon clicking
+      const { line, col } = getLineColFromIndex(content, start);
+      const lines = content.split('\n');
+      const lineText = lines[line] || '';
+      if (lineText.length > 0 && col >= lineText.length) {
+        start = getIndexFromLineCol(content, line, Math.max(0, lineText.length - 1));
+      }
+      setCursorIndex(start);
+    } else if (mode === 'visual' || mode === 'visual-line') {
+      setCursorIndex(start);
+    } else if (mode === 'insert') {
+      setCursorIndex(start);
+    }
+  };
+
+  // Navigate through command history (: and /)
+  const handleHistoryNavigate = (direction: 'up' | 'down') => {
+    if (commandHistory.length === 0) return;
+    if (direction === 'up') {
+      if (historyIndex === -1) {
+        historyDraftRef.current = commandInput;
+      }
+      const nextIdx = Math.min(historyIndex + 1, commandHistory.length - 1);
+      setHistoryIndex(nextIdx);
+      setCommandInput(commandHistory[commandHistory.length - 1 - nextIdx]);
+    } else {
+      if (historyIndex === -1) return;
+      const nextIdx = historyIndex - 1;
+      setHistoryIndex(nextIdx);
+      if (nextIdx === -1) {
+        setCommandInput(historyDraftRef.current);
+      } else {
+        setCommandInput(commandHistory[commandHistory.length - 1 - nextIdx]);
+      }
+    }
+  };
+
+  // Handle local text edits in Insert Mode or intercept Android Gboard soft keyboard inputs
+  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    if (mode === 'insert') {
+      if (undoHistory.length === 0 || undoHistory[undoHistory.length - 1] !== content) {
+        setUndoHistory(prev => [...prev, content]);
+        setRedoHistory([]);
+      }
+      const sanitized = sanitizeText(val);
+      setContent(sanitized);
+      setCursorIndex(e.target.selectionStart);
+    } else if (mode !== 'command' && mode !== 'search') {
+      // Fallback for Android Chrome Gboard / soft keyboard typing in Normal or Visual mode
+      if (val !== content) {
+        isProgrammaticSelectionRef.current = true;
+        let inserted = '';
+        if (val.length > content.length) {
+          const diffLen = val.length - content.length;
+          const selStart = e.target.selectionStart;
+          if (selStart > 0) {
+            inserted = val.substring(selStart - diffLen, selStart);
+          } else {
+            inserted = val.substring(cursorIndex, cursorIndex + diffLen);
+          }
+        } else if (val.length === content.length && cursorIndex < val.length) {
+          inserted = val[cursorIndex] || '';
+        } else if (val.length < content.length) {
+          inserted = 'x';
+        }
+
+        if (textareaRef.current) {
+          textareaRef.current.value = content;
+          textareaRef.current.selectionStart = cursorIndex;
+          textareaRef.current.selectionEnd = mode === 'normal' ? Math.min(cursorIndex + 1, content.length) : cursorIndex;
+        }
+
+        if (inserted) {
+          for (const char of inserted) {
+            processVimKey(char);
+          }
+        }
+      }
+    }
+  };
+
+  // Compute cursor position values for status bar display
+  const { line: currentLine, col: currentCol } = getLineColFromIndex(content, cursorIndex);
+  const linesList = content.split('\n');
+  const totalLines = linesList.length;
+
+  // Dynamically compute line numbers column (gutter) width based on lines order of magnitude & font size
+  const gutterWidth = useMemo(() => {
+    if (!showLineNumbers) return 0;
+    const lineCount = Math.max(1, linesList.length);
+    // Minimum 2 digits for aesthetic balance (1..99) without layout shift
+    const digitCount = Math.max(2, String(lineCount).length);
+    // Monospace char width ratio is ~0.62 of font size
+    const charWidth = editorFontSize * 0.62;
+    // Folding chevron icon width if enabled
+    const foldAllowance = foldingEnabled ? 14 : 0;
+    // Gutter padding / margin
+    const gutterPadding = 12;
+    return Math.ceil(digitCount * charWidth + foldAllowance + gutterPadding);
+  }, [showLineNumbers, linesList.length, editorFontSize, foldingEnabled]);
+
+  /* How many `~` rows fit between the last line of text and the bottom
+     of the frame. Uses the measured text height, so it stays correct
+     with word wrap on and with any font size. */
+  const currentLineHeightPx = getLineHeightPx(editorFontSize);
+  const eofRowCount = Math.max(
+    0,
+    Math.min(
+      MAX_EOF_ROWS,
+      Math.floor((frameHeight - measuredContentHeight - EDITOR_PADDING_PX / 2) / currentLineHeightPx)
+    )
+  );
+
+  // Render highlighted previews on the fly (Simple, robust syntax parsing overlay)
+  const renderHighlightedCode = () => {
+    // Escape HTML tags to prevent broken nodes
+    let safeText = content
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    if (!isSyntaxActive) {
+      // Do nothing, just plain text escaping
+    } else if (format === 'txt') {
+      const tokens: string[] = [];
+      let tempText = safeText;
+
+      // 1. Comments starting with #
+      tempText = tempText.replace(/(#.*)$/gm, (match) => {
+        tokens.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+        return `___TXT_TOKEN_${tokens.length - 1}___`;
+      });
+      // 2. Headers =...= or {-...-}
+      tempText = tempText.replace(/^(=+.*?=+)/gm, (match) => {
+        tokens.push(`<span style="color: #8AB4F8; font-weight: bold;">${match}</span>`);
+        return `___TXT_TOKEN_${tokens.length - 1}___`;
+      });
+      tempText = tempText.replace(/^({-+.*?-+})/gm, (match) => {
+        tokens.push(`<span style="color: #61AFEF; font-weight: bold;">${match}</span>`);
+        return `___TXT_TOKEN_${tokens.length - 1}___`;
+      });
+
+      // 3. Keywords & Commands
+      tempText = tempText.replace(/\b(set|number|nonumber|wrap|nowrap|syntax|folding|textwidth|tw|model|fontsize|theme)\b/g, '<span style="color: #C678DD; font-weight: bold;">$1</span>');
+      // 4. Options / Values
+      tempText = tempText.replace(/\b(on|off|dark|light|system|flash|pro|NORMAL|INSERT|COMMAND|VISUAL)\b/g, '<span style="color: #98C379; font-weight: bold;">$1</span>');
+      // 5. Standalone Numbers
+      tempText = tempText.replace(/\b(\d+)\b/g, '<span style="color: #D19A66;">$1</span>');
+
+      // 6. Restore tokens
+      for (let i = 0; i < tokens.length; i++) {
+        tempText = tempText.replace(`___TXT_TOKEN_${i}___`, tokens[i]);
+      }
+      safeText = tempText;
+    }
+
+    // Markdown Parser
+    else if (format === 'md') {
+      const codeBlocks: string[] = [];
+      let tempText = safeText;
+
+      // 1. Isolate code blocks
+      tempText = tempText.replace(/(```[\s\S]*?```)/g, (match) => {
+        codeBlocks.push(`<span style="color: #5C6370; background-color: rgba(92, 99, 112, 0.08);">${match}</span>`);
+        return `___MD_CODE_${codeBlocks.length - 1}___`;
+      });
+
+      // 2. Headers
+      tempText = tempText
+        .replace(/^(#\s.+)$/gm, '<span style="color: #61AFEF; font-weight: bold;">$1</span>')
+        .replace(/^(##\s.+)$/gm, '<span style="color: #C678DD; font-weight: bold;">$1</span>')
+        .replace(/^(###\s.+)$/gm, '<span style="color: #98C379; font-weight: bold;">$1</span>')
+        // Bold
+        .replace(/(\*\*.*?\*\*)/g, '<span style="font-weight: bold; color: inherit;">$1</span>')
+        // Italic
+        .replace(/(\*.*?\*)/g, '<span style="font-style: italic; color: inherit;">$1</span>')
+        // List indicators
+        .replace(/^(\s*-\s)/gm, '<span style="color: #D19A66; font-weight: bold;">$1</span>')
+        .replace(/^(\s*\d+\.\s)/gm, '<span style="color: #D19A66; font-weight: bold;">$1</span>');
+
+      // 3. Restore code blocks
+      for (let i = 0; i < codeBlocks.length; i++) {
+        tempText = tempText.replace(`___MD_CODE_${i}___`, codeBlocks[i]);
+      }
+
+      safeText = tempText;
+    }
+
+    // XML & HTML Parser
+    else if (format === 'xml' || format === 'html') {
+      const comments: string[] = [];
+      // 1. Isolate comments
+      let tempText = safeText.replace(/(&lt;!--[\s\S]*?--&gt;)/g, (match) => {
+        comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+        return `___XML_COMMENT_${comments.length - 1}___`;
+      });
+
+      // 2. Process XML/HTML tags
+      tempText = tempText.replace(/(&lt;\/?[a-zA-Z0-9_:-]+(?:[^&gt;]*?)?\/?&gt;)/g, (tagMatch) => {
+        // Extract attribute string values FIRST into placeholders to avoid matching injected style attributes
+        const values: string[] = [];
+        let cleanTag = tagMatch.replace(/("[^"]*"|'[^']*')/g, (val) => {
+          values.push(`<span style="color: #98C379;">${val}</span>`);
+          return `___ATTR_VAL_${values.length - 1}___`;
+        });
+
+        // Highlight tag name at beginning (e.g., &lt;application or &lt;/manifest)
+        cleanTag = cleanTag.replace(/^(&lt;\/?[a-zA-Z0-9_:-]+)/, '<span style="color: #E06C75; font-weight: bold;">$1</span>');
+
+        // Highlight closing bracket (e.g., &gt; or /&gt;)
+        cleanTag = cleanTag.replace(/(\/?&gt;)$/, '<span style="color: #E06C75; font-weight: bold;">$1</span>');
+
+        // Highlight attribute names (e.g., android:allowBackup= or class=)
+        cleanTag = cleanTag.replace(/\b([a-zA-Z0-9_:-]+)\s*=/g, '<span style="color: #D19A66; font-weight: 500;">$1</span>=');
+
+        // Restore string values
+        for (let i = 0; i < values.length; i++) {
+          cleanTag = cleanTag.replace(`___ATTR_VAL_${i}___`, values[i]);
+        }
+
+        return cleanTag;
+      });
+
+      // 3. Restore comments
+      for (let i = 0; i < comments.length; i++) {
+        tempText = tempText.replace(`___XML_COMMENT_${i}___`, comments[i]);
+      }
+
+      safeText = tempText;
+    }
+
+    // JSON Parser
+    else if (format === 'json') {
+      const tokens: string[] = [];
+      let tempText = safeText;
+
+      // 1. Isolate and highlight Keys: "key":
+      tempText = tempText.replace(/("[^"\\]*(?:\\.[^"\\]*)*")(\s*:)/g, (_, key, colon) => {
+        tokens.push(`<span style="color: #61AFEF; font-weight: 600;">${key}</span>${colon}`);
+        return `___JSON_TOKEN_${tokens.length - 1}___`;
+      });
+
+      // 2. Isolate and highlight String values: "string"
+      tempText = tempText.replace(/("[^"\\]*(?:\\.[^"\\]*)*")/g, (match) => {
+        tokens.push(`<span style="color: #98C379;">${match}</span>`);
+        return `___JSON_TOKEN_${tokens.length - 1}___`;
+      });
+
+      // 3. Highlight numbers
+      tempText = tempText.replace(/\b(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)\b/g, '<span style="color: #D19A66;">$1</span>');
+
+      // 4. Highlight booleans & null
+      tempText = tempText.replace(/\b(true|false|null)\b/g, '<span style="color: #C678DD; font-weight: bold;">$1</span>');
+
+      // 5. Restore isolated tokens
+      for (let i = 0; i < tokens.length; i++) {
+        tempText = tempText.replace(`___JSON_TOKEN_${i}___`, tokens[i]);
+      }
+
+      safeText = tempText;
+    }
+
+    // Code highlighters (py, kt, js, ts, bash, java, c, cpp, ly, css, sql, rs, go)
+    else if (['py', 'kt', 'js', 'ts', 'bash', 'java', 'c', 'cpp', 'ly', 'css', 'sql', 'rs', 'go'].includes(format)) {
+      let keywords = /\b(def|class|import|from|return|if|else|elif|for|while|in|val|fun|var|const|let|function|interface|package|private|public|override|this|new|typeof|instanceof)\b/g;
+      
+      if (format === 'bash') {
+        keywords = /\b(function|if|then|else|elif|fi|for|while|do|done|case|esac|exit|return|local|echo|select|until|in)\b/g;
+      } else if (format === 'ts' || format === 'js') {
+        keywords = /\b(const|let|var|function|class|interface|type|extends|implements|import|export|from|return|if|else|for|while|switch|case|break|continue|default|new|this|typeof|instanceof|async|await|public|private|protected|readonly|static|constructor|any|string|number|boolean|void)\b/g;
+      } else if (format === 'py') {
+        keywords = /\b(def|class|import|from|return|if|else|elif|for|while|in|and|or|not|is|try|except|finally|raise|with|as|lambda|pass|break|continue|None|True|False)\b/g;
+      } else if (format === 'kt') {
+        keywords = /\b(package|import|class|interface|fun|val|var|return|if|else|for|while|when|is|in|this|super|override|private|public|protected|internal|object|companion|data|init|constructor)\b/g;
+      } else if (format === 'java') {
+        keywords = /\b(public|private|protected|class|interface|extends|implements|static|final|void|int|double|float|long|short|boolean|char|byte|String|import|package|return|new|if|else|for|while|do|switch|case|break|continue|try|catch|finally|throw|throws|this|super|null|true|false|instanceof|enum|override|synchronized|volatile|transient|native|abstract)\b/g;
+      } else if (format === 'c') {
+        keywords = /\b(int|char|float|double|void|long|short|unsigned|signed|struct|typedef|union|enum|const|static|extern|auto|sizeof|return|if|else|for|while|do|switch|case|break|continue|goto|NULL|inline|register|volatile|restrict|include|define|ifdef|ifndef|endif|pragma)\b/g;
+      } else if (format === 'cpp') {
+        keywords = /\b(int|char|float|double|void|long|short|unsigned|signed|struct|typedef|union|enum|const|static|extern|auto|sizeof|return|if|else|for|while|do|switch|case|break|continue|goto|NULL|class|template|typename|public|private|protected|virtual|override|constexpr|std|cout|cin|endl|vector|string|map|set|new|delete|try|catch|throw|noexcept|nullptr|true|false|namespace|using|explicit|friend|operator|inline|include|define|ifdef|ifndef|endif|pragma)\b/g;
+      } else if (format === 'ly') {
+        keywords = /\\(version|header|paper|score|relative|clef|key|time|tempo|repeat|alternative|chordmode|lyricmode|new|layout|midi|major|minor|markup|bold|italic|tuplet|fermata|pp|p|mp|mf|f|ff|override|set|revert|bar)\b|\b(Staff|Voice|GrandStaff|PianoStaff|Lyrics|ChordNames)\b/g;
+      } else if (format === 'css') {
+        keywords = /\b(color|background|background-color|font-family|font-size|font-weight|margin|padding|border|border-radius|display|flex|grid|width|height|position|top|left|right|bottom|box-shadow|opacity|transition|transform|cursor)\b/g;
+      } else if (format === 'sql') {
+        keywords = /\b(SELECT|FROM|WHERE|INSERT|INTO|UPDATE|DELETE|JOIN|LEFT|RIGHT|INNER|OUTER|FULL|CROSS|ON|GROUP|BY|HAVING|ORDER|ASC|DESC|CREATE|TABLE|ALTER|DROP|INDEX|PRIMARY|KEY|FOREIGN|REFERENCES|NULL|NOT|AND|OR|AS|LIMIT|OFFSET|VALUES|SET|UNION|ALL|EXISTS|LIKE|IN|BETWEEN|CASE|WHEN|THEN|END|ELSE|INT|VARCHAR|TEXT|TIMESTAMP|SERIAL|BOOLEAN)\b/gi;
+      } else if (format === 'rs') {
+        keywords = /\b(fn|let|mut|struct|enum|impl|trait|pub|use|mod|match|if|else|loop|while|for|in|return|break|continue|self|Self|where|async|await|unsafe|dyn|type|ref|move|i8|i16|i32|i64|i128|u8|u16|u32|u64|u128|f32|f64|bool|str|String|Option|Result|Some|None|Ok|Err|println!|vec!|format!|true|false)\b/g;
+      } else if (format === 'go') {
+        keywords = /\b(package|import|func|var|const|type|struct|interface|return|if|else|for|range|switch|case|default|defer|go|select|chan|map|nil|true|false|string|int|int64|float64|bool|byte|rune|error|append|make|len|cap)\b/g;
+      }
+      
+      // Arrays to temporarily store comments and strings to protect them from keyword highlighting
+      const strings: string[] = [];
+      const comments: string[] = [];
+      let tempText = safeText;
+
+      // 1. Isolate comments
+      if (format === 'py' || format === 'bash') {
+        tempText = tempText.replace(/(#.*)$/gm, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+      } else if (format === 'ly') {
+        // LilyPond block comments %{ ... %}
+        tempText = tempText.replace(/(%\{[\s\S]*?%\})/g, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+        // LilyPond single line comments % ...
+        tempText = tempText.replace(/(%.*)$/gm, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+      } else if (format === 'sql') {
+        // SQL comments -- ... or /* ... */
+        tempText = tempText.replace(/(\/\*[\s\S]*?\*\/)/g, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+        tempText = tempText.replace(/(--.*)$/gm, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+      } else {
+        // Multi-line comments
+        tempText = tempText.replace(/(\/\*[\s\S]*?\*\/)/g, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+        // Single-line comments
+        tempText = tempText.replace(/(\/\/.*)$/gm, (match) => {
+          comments.push(`<span style="color: #5C6370; font-style: italic;">${match}</span>`);
+          return `___COMMENT_PLACEHOLDER_${comments.length - 1}___`;
+        });
+      }
+
+      // 2. Isolate strings
+      tempText = tempText.replace(/("[^"\\]*(?:\\.[^"\\]*)*")/g, (match) => {
+        strings.push(`<span style="color: #98C379;">${match}</span>`);
+        return `___STRING_PLACEHOLDER_${strings.length - 1}___`;
+      });
+      tempText = tempText.replace(/('[^'\\]*(?:\\.[^'\\]*)*')/g, (match) => {
+        strings.push(`<span style="color: #98C379;">${match}</span>`);
+        return `___STRING_PLACEHOLDER_${strings.length - 1}___`;
+      });
+
+      // 3. Highlight pure code blocks
+      tempText = tempText.replace(keywords, '<span style="color: #C678DD; font-weight: bold;">$1</span>');
+      tempText = tempText.replace(/\b(\d+)\b/g, '<span style="color: #D19A66;">$1</span>');
+
+      // 4. Restore strings
+      for (let i = 0; i < strings.length; i++) {
+        tempText = tempText.replace(`___STRING_PLACEHOLDER_${i}___`, strings[i]);
+      }
+
+      // 5. Restore comments
+      for (let i = 0; i < comments.length; i++) {
+        tempText = tempText.replace(`___COMMENT_PLACEHOLDER_${i}___`, comments[i]);
+      }
+
+      safeText = tempText;
+    }
+
+    // LaTeX Parser (tex)
+    else if (format === 'tex') {
+      safeText = safeText
+        // Comments starting with %
+        .replace(/(%.*)$/gm, '<span style="color: #5C6370; font-style: italic;">$1</span>')
+        // Commands starting with \
+        .replace(/(\\[a-zA-Z]+)/g, '<span style="color: #C678DD; font-weight: 600;">$1</span>')
+        // Arguments inside curly braces {...}
+        .replace(/(\{.*?\})/g, '<span style="color: #E06C75;">$1</span>')
+        // Options inside brackets [...]
+        .replace(/(\[.*?\])/g, '<span style="color: #D19A66;">$1</span>');
+    }
+
+    // DOCX Parser (Word Document rich styling)
+    else if (format === 'docx') {
+      safeText = safeText
+        // Headings
+        .replace(/^(#\s.+)$/gm, '<span style="color: #3B82F6; font-weight: bold;">$1</span>')
+        .replace(/^(##\s.+)$/gm, '<span style="color: #10B981; font-weight: bold;">$1</span>')
+        .replace(/^(###\s.+)$/gm, '<span style="color: #8B5CF6; font-weight: bold;">$1</span>')
+        // Color tags <color:#hex>...</color>
+        .replace(/&lt;color:(#?[a-zA-Z0-9]+)&gt;(.*?)&lt;\/color&gt;/g, '<span style="color: $1;">$2</span>')
+        // List items
+        .replace(/^(\s*-\s)/gm, '<span style="color: #F59E0B; font-weight: bold;">$1</span>')
+        // Bold and italic
+        .replace(/(\*\*.*?\*\*)/g, '<span style="font-weight: bold;">$1</span>')
+        .replace(/(\*.*?\*)/g, '<span style="font-style: italic;">$1</span>');
+    }
+
+    // Global inline search highlight overlay across all text occurrences
+    if (searchQuery && searchQuery.trim().length > 0) {
+      const q = searchQuery.trim();
+      const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const activeMatchCharIndex = (activeSearchIdx >= 0 && activeSearchIdx < searchResults.length)
+        ? searchResults[activeSearchIdx]
+        : -1;
+
+      // Tokenize by HTML tags to prevent corrupting tag attributes
+      const tokens = safeText.split(/(<[^>]+>)/g);
+      let cumulativePlainOffset = 0;
+
+      safeText = tokens.map(token => {
+        if (token.startsWith('<') && token.endsWith('>')) {
+          return token;
+        }
+
+        // Convert HTML entities back to plain text for position matching
+        const tokenPlain = token
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&quot;/g, '"')
+          .replace(/&#039;/g, "'")
+          .replace(/&amp;/g, '&');
+
+        let result = '';
+        let lastIndex = 0;
+        const tokenRegex = new RegExp(escapedQuery, 'gi');
+        let match: RegExpExecArray | null;
+
+        while ((match = tokenRegex.exec(tokenPlain)) !== null) {
+          const matchStart = match.index;
+          const matchText = match[0];
+
+          // Text before match
+          const before = tokenPlain.substring(lastIndex, matchStart)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+          result += before;
+
+          // Check if this match corresponds to the active cursor match
+          const matchAbsPos = cumulativePlainOffset + matchStart;
+          const isActive = (activeMatchCharIndex !== -1 && Math.abs(matchAbsPos - activeMatchCharIndex) <= 1);
+
+          const escapedMatchText = matchText
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+          if (isActive) {
+            result += `<mark style="background-color: #10b981; color: #ffffff; font-weight: bold; border-radius: 3px; padding: 0 3px; box-shadow: 0 0 10px rgba(16,185,129,0.9);">${escapedMatchText}</mark>`;
+          } else {
+            result += `<mark style="background-color: #f59e0b; color: #000000; font-weight: bold; border-radius: 3px; padding: 0 3px;">${escapedMatchText}</mark>`;
+          }
+
+          lastIndex = tokenRegex.lastIndex;
+        }
+
+        const remaining = tokenPlain.substring(lastIndex)
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        result += remaining;
+
+        cumulativePlainOffset += tokenPlain.length;
+        return result;
+      }).join('');
+    }
+
+    
+    // Visual Selection Bounds calculation
+    let visualStart = -1;
+    let visualEnd = -1;
+    if (mode === 'visual' || mode === 'visual-line') {
+      const rawStart = Math.min(visualAnchorIndex, cursorIndex);
+      const rawEnd = Math.max(visualAnchorIndex, cursorIndex);
+      if (mode === 'visual-line') {
+        const { startOfLines, endOfLines } = getVisualLineBounds(content, rawStart, rawEnd);
+        visualStart = startOfLines;
+        visualEnd = endOfLines;
+      } else {
+        visualStart = rawStart;
+        visualEnd = Math.min(rawEnd + 1, content.length);
+      }
+    }
+
+    // Inject visual highlight and high-visibility caret element
+    let caretInjected = false;
+    const tokensCaret = safeText.split(/(<[^>]+>)/g);
+    let cumulativePlainOffsetCaret = 0;
+    
+    safeText = tokensCaret.map(token => {
+      if (token.startsWith('<') && token.endsWith('>')) {
+        return token;
+      }
+      const tokenPlain = token
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'")
+        .replace(/&amp;/g, '&');
+      
+      const tokenLen = tokenPlain.length;
+      if (tokenLen === 0) return token;
+
+      let resultHtml = '';
+      let i = 0;
+
+      while (i < tokenLen) {
+        const absIdx = cumulativePlainOffsetCaret + i;
+        const isCursor = !caretInjected && (absIdx === cursorIndex);
+        const isVisual = (absIdx >= visualStart && absIdx < visualEnd);
+
+        if (isCursor) {
+          caretInjected = true;
+          const char = tokenPlain[i];
+          const escapedChar = char
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+
+          if (mode === 'visual' || mode === 'visual-line') {
+            if (char === '\n') {
+              resultHtml += `<span id="caret-pos" class="inline-block w-[0.65em] h-[1.25em] align-middle bg-amber-400 dark:bg-[#8AB4F8] rounded-xs ring-2 ring-amber-500 shadow-md"> </span>\n`;
+            } else {
+              resultHtml += `<span id="caret-pos" class="bg-amber-400 text-black dark:bg-[#8AB4F8] dark:text-[#0D0F12] font-bold rounded-xs px-px ring-2 ring-amber-500 dark:ring-blue-300 shadow-md inline-block">${escapedChar}</span>`;
+            }
+          } else if (mode === 'normal') {
+            if (char === '\n') {
+              resultHtml += `<span id="caret-pos" class="inline-block w-[0.65em] h-[1.25em] align-middle bg-gray-800 dark:bg-[#8AB4F8] opacity-90 rounded-xs ring-1 ring-blue-400"> </span>\n`;
+            } else {
+              resultHtml += `<span id="caret-pos" class="bg-gray-800 text-white dark:bg-[#8AB4F8] dark:text-[#0D0F12] font-bold rounded-xs px-px ring-1 ring-blue-400 shadow-xs inline-block">${escapedChar}</span>`;
+            }
+          } else if (mode === 'insert') {
+            resultHtml += `<span id="caret-pos" class="inline-block w-[2px] h-[1.2em] align-middle bg-blue-600 dark:bg-[#8AB4F8] shadow-md animate-pulse"></span>${escapedChar}`;
+          } else {
+            resultHtml += `<span id="caret-pos" class="inline"></span>${escapedChar}`;
+          }
+          i++;
+        } else if (isVisual) {
+          let j = i;
+          while (
+            j < tokenLen &&
+            (cumulativePlainOffsetCaret + j >= visualStart) &&
+            (cumulativePlainOffsetCaret + j < visualEnd) &&
+            (!caretInjected ? (cumulativePlainOffsetCaret + j !== cursorIndex) : true)
+          ) {
+            j++;
+          }
+          const chunk = tokenPlain.substring(i, j);
+          const escapedChunk = chunk
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+          resultHtml += `<mark class="bg-blue-500/35 dark:bg-blue-600/45 text-inherit rounded-xs px-px">${escapedChunk}</mark>`;
+          i = j;
+        } else {
+          let j = i;
+          while (
+            j < tokenLen &&
+            (!caretInjected ? (cumulativePlainOffsetCaret + j !== cursorIndex) : true) &&
+            !(cumulativePlainOffsetCaret + j >= visualStart && cumulativePlainOffsetCaret + j < visualEnd)
+          ) {
+            j++;
+          }
+          const chunk = tokenPlain.substring(i, j);
+          const escapedChunk = chunk
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+          resultHtml += escapedChunk;
+          i = j;
+        }
+      }
+      
+      cumulativePlainOffsetCaret += tokenLen;
+      return resultHtml;
+    }).join('');
+
+    if (!caretInjected) {
+      if (mode === 'visual' || mode === 'visual-line') {
+        safeText += `<span id="caret-pos" class="inline-block w-[0.65em] h-[1.25em] align-middle bg-amber-400 dark:bg-[#8AB4F8] rounded-xs ring-2 ring-amber-500 shadow-md"> </span>`;
+      } else if (mode === 'normal') {
+        safeText += `<span id="caret-pos" class="inline-block w-[0.65em] h-[1.25em] align-middle bg-gray-800 dark:bg-[#8AB4F8] opacity-90 rounded-xs ring-1 ring-blue-400"> </span>`;
+      } else if (mode === 'insert') {
+        safeText += `<span id="caret-pos" class="inline-block w-[2px] h-[1.2em] align-middle bg-blue-600 dark:bg-[#8AB4F8] shadow-md animate-pulse"></span>`;
+      }
+    }
+
+    return <div className={`${wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'}`} style={{ lineHeight: '1.5' }} dangerouslySetInnerHTML={{ __html: safeText }} />;
+  };
+
+  return (
+    <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] text-gray-900 dark:text-[#E0E0E0] transition-colors duration-200 min-w-0 min-h-0 overflow-hidden">
+      
+      {/* Mini Command Line Guide Bar / Fullscreen Preview Header Bar */}
+      <div className="bg-gray-50 dark:bg-[#16181D] px-4 py-3 sm:px-4 sm:py-2 flex flex-wrap justify-between items-center gap-2 text-lg sm:text-xs text-gray-500 dark:text-zinc-400 border-b border-gray-200 dark:border-[#2D2D2D] font-sans">
+        {showPreview && isPreviewFullScreen ? (
+          /* PREVIEW FULLSCREEN REPLACEMENT TOOLBAR */
+          <>
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="flex items-center gap-1.5 font-bold text-gray-800 dark:text-zinc-100 font-sans text-sm sm:text-xs uppercase">
+                <Sparkles size={16} className="text-[#8AB4F8]" />
+                {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
+              </span>
+              <span className="text-[10px] font-sans px-2 py-0.5 rounded bg-gray-200/80 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 font-semibold">
+                {lang === 'it' ? "Solo Lettura" : "Read Only"}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 font-sans">
+              {/* Dedicated Preview Zoom Regulator */}
+              <div className="flex items-center gap-0.5 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 shadow-xs">
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(Math.max(50, previewZoom - 10))}
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Riduci zoom anteprima (-)' : 'Zoom out preview (-)'}
+                >
+                  <ZoomOut size={16} className="sm:size-[13px]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(100)}
+                  className="px-2 py-0.5 text-xs sm:text-[11px] font-mono font-bold text-gray-700 dark:text-zinc-200 hover:text-blue-500 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Ripristina zoom 100%' : 'Reset zoom to 100%'}
+                >
+                  {previewZoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(Math.min(250, previewZoom + 10))}
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Aumenta zoom anteprima (+)' : 'Zoom in preview (+)'}
+                >
+                  <ZoomIn size={16} className="sm:size-[13px]" />
+                </button>
+              </div>
+
+              {/* Split View Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsPreviewFullScreen(false)}
+                className="flex items-center gap-1.5 px-3 py-2 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg text-sm sm:text-xs font-bold border transition-all cursor-pointer bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/40 dark:text-[#8AB4F8] dark:border-blue-900 shadow-xs"
+                title={lang === 'it' ? 'Torna a vista affiancata' : 'Switch to split view'}
+              >
+                <Minimize2 size={16} className="sm:size-[13px]" />
+                <span>{lang === 'it' ? 'Vista Affiancata' : 'Split View'}</span>
+              </button>
+
+              {/* Close Preview Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPreview(false);
+                  setIsPreviewFullScreen(false);
+                }}
+                className="p-2 sm:p-1.5 text-gray-500 hover:text-red-600 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-xl sm:rounded-lg transition-colors cursor-pointer"
+                title={lang === 'it' ? 'Chiudi anteprima' : 'Close preview'}
+              >
+                <X size={20} className="sm:size-[16px]" />
+              </button>
+            </div>
+          </>
+        ) : (
+          /* STANDARD EDITING TOOLBAR */
+          <>
+            <div className="flex items-center gap-2 sm:gap-4">
+              <span className="flex items-center gap-1.5">
+                <Terminal size={24} className="sm:size-[13px] text-[#8AB4F8]" />
+                <span className="text-gray-400">{lang === 'it' ? 'Stato: ' : 'Status: '}</span>
+                <strong className="text-emerald-700 dark:text-[#8AB4F8] uppercase tracking-wide px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40 font-mono text-sm sm:text-[10px]">
+                  {isReadMode ? (lang === 'it' ? 'LETTURA' : 'READING') : mode}
+                </strong>
+              </span>
+              {commandBuffer && (
+                <span className="font-mono bg-zinc-100 dark:bg-[#2C313C] px-1.5 py-0.5 rounded text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 text-sm sm:text-[10px]">
+                  Buffer: {commandBuffer}
+                </span>
+              )}
+            </div>
+            
+            <div className="flex items-center gap-2 sm:gap-2">
+              {/* Read Mode Toggle Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  const nextRead = !isReadMode;
+                  setIsReadMode(nextRead);
+                  if (nextRead) {
+                    setMode('normal');
+                    closeSoftKeyboard();
+                  } else {
+                    openSoftKeyboard();
+                  }
+                }}
+                className={`flex items-center gap-1.5 px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg transition-all text-lg sm:text-xs cursor-pointer border font-bold ${
+                  isReadMode
+                    ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-[#2C313C]/30 dark:text-[#8AB4F8] dark:border-[#1E2127]'
+                }`}
+                title={lang === 'it' ? 'Tasto rapido per passare tra Modalità Lettura (Google Docs) e Modifica' : 'Toggle Reading vs Editing Mode'}
+                id="toggle-read-mode-btn"
+              >
+                {isReadMode ? <BookOpen size={24} className="sm:size-[13px]" /> : <Pencil size={24} className="sm:size-[13px]" />}
+                <span>{isReadMode ? (lang === 'it' ? 'Lettura' : 'Reading') : (lang === 'it' ? 'Modifica' : 'Editing')}</span>
+              </button>
+
+              {/* Quick Font Size Adjusters (A- / A+) */}
+              {setEditorFontSize && (
+                <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 sm:p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.max(12, editorFontSize - 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Riduci dimensione testo' : 'Decrease text size'}
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sizes = [12, 14, 18, 24, 30, 32, 36, 40, 48];
+                      const currentIdx = sizes.indexOf(editorFontSize);
+                      const nextSize = sizes[(currentIdx + 1) % sizes.length];
+                      setEditorFontSize(nextSize);
+                    }}
+                    className="text-xs sm:text-sm sm:text-[10px] font-mono px-2 sm:px-1 font-bold text-gray-700 dark:text-zinc-300 hover:text-blue-500 cursor-pointer"
+                    title={lang === 'it' ? 'Tocca per scorrere dimensioni (12, 14, 18, 24, 30, 32, 36, 40, 48px)' : 'Tap to cycle preset font sizes'}
+                  >
+                    {editorFontSize}px
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.min(48, editorFontSize + 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Aumenta dimensione testo fino a 48px' : 'Increase text size up to 48px'}
+                  >
+                    A+
+                  </button>
+                </div>
+              )}
+
+              <button
+                onClick={() => setIsSyntaxActive(!isSyntaxActive)}
+                className={`flex items-center gap-1.5 px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg transition-all text-lg sm:text-xs cursor-pointer border ${
+                  isSyntaxActive 
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-[#2C313C]/30 dark:text-[#8AB4F8] dark:border-[#1E2127] font-bold' 
+                    : 'bg-white dark:bg-[#0D0F12] hover:bg-gray-50 dark:hover:bg-zinc-900 text-gray-700 dark:text-zinc-300 border-gray-200 dark:border-[#2D2D2D]'
+                }`}
+                title={lang === 'it' ? "Attiva/Disattiva Evidenziazione Sintassi nell'editor (:set syntax=on|off)" : "Toggle Syntax Highlighting in editor (:set syntax=on|off)"}
+                id="toggle-syntax-btn"
+              >
+                <Sparkles size={24} className={`sm:size-[13px] ${isSyntaxActive ? 'text-amber-500 animate-pulse' : 'text-gray-400'}`} />
+                <span className="hidden sm:inline">{lang === 'it' ? `Sintassi: ${isSyntaxActive ? 'ON' : 'OFF'}` : `Syntax: ${isSyntaxActive ? 'ON' : 'OFF'}`}</span>
+              </button>
+              <button
+                onClick={() => setShowPreview(!showPreview)}
+                className={`flex items-center gap-1.5 px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg transition-all text-lg sm:text-xs cursor-pointer border ${
+                  showPreview 
+                    ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-[#2C313C]/30 dark:text-[#8AB4F8] dark:border-[#1E2127]' 
+                    : 'bg-white dark:bg-[#0D0F12] hover:bg-gray-50 dark:hover:bg-zinc-900 text-gray-700 dark:text-zinc-300 border-gray-200 dark:border-[#2D2D2D]'
+                }`}
+                title={lang === 'it' ? "Affianca anteprima ad albero" : "Side-by-side preview"}
+                id="toggle-preview-btn"
+              >
+                {showPreview ? <Edit3 size={24} className="sm:size-[13px]" /> : <Eye size={24} className="sm:size-[13px]" />}
+                <span className="hidden sm:inline">{showPreview ? (lang === 'it' ? "Chiudi Anteprima" : "Close Preview") : (lang === 'it' ? "Anteprima" : "Preview")}</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Editor Central Frame: always fills the space left by the toolbar
+          and by the panels currently open, on every screen size. */}
+      <div ref={frameRef} className="flex-1 flex overflow-hidden min-h-0 min-w-0">
+        
+        {/* Editor Main Canvas */}
+        <div className={`flex-1 flex relative overflow-hidden bg-white dark:bg-[#0D0F12] transition-colors duration-200 min-w-0 min-h-0 ${
+          showPreview ? (isPreviewFullScreen ? 'hidden' : 'hidden lg:flex border-r border-gray-200 dark:border-[#1E2127]') : ''
+        }`}>
+          
+          {/* Layer -1: Hidden mirror used ONLY to measure the real text height.
+              It is invisible, non-interactive and never scrolls: its natural
+              height is exactly the height the text occupies inside the textarea. */}
+          <div
+            ref={measureRef}
+            className={`absolute top-0 right-0 p-4 box-border font-mono tracking-normal invisible pointer-events-none select-none -z-10 ${
+              wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
+            }`}
+            style={{
+              left: showLineNumbers ? `${gutterWidth}px` : '0px',
+              fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace',
+              fontSize: `${editorFontSize}px`,
+              lineHeight: '1.5',
+              tabSize: 4,
+              MozTabSize: 4,
+              height: 'auto',
+            }}
+            aria-hidden="true"
+          >
+            {content || ' '}
+          </div>
+
+          {/* Layer 0: Background for line numbers */}
+          {showLineNumbers && (
+            <div 
+              style={{ width: `${gutterWidth}px` }}
+              className="absolute left-0 top-0 bottom-0 bg-gray-50 dark:bg-[#0D0F12] border-r border-gray-100 dark:border-[#1E2127] z-0 pointer-events-none select-none"
+            />
+          )}
+
+          {/* Layer 1: Line numbers scrolling sync overlay */}
+          {showLineNumbers && (
+            <div
+              ref={lineNumbersRef}
+              className={`absolute top-0 bottom-0 left-0 right-0 py-4 pr-4 box-border font-mono tracking-normal overflow-hidden pointer-events-none select-none z-10 ${
+                wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
+              }`}
+              style={{
+                fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace',
+                fontSize: `${editorFontSize}px`,
+                lineHeight: '1.5',
+                tabSize: 4,
+                MozTabSize: 4,
+                paddingLeft: `${gutterWidth + 16}px`,
+                scrollbarWidth: 'none',
+              }}
+              aria-hidden="true"
+            >
+              {linesList.map((line, idx) => {
+                const isFolded = foldedLines.has(idx);
+                const isHeading = /^(#|\\section|def |class |function |<|\{)/.test((line || '').trim());
+
+                return (
+                  <div key={idx} className="relative w-full text-transparent">
+                    <div 
+                      style={{ width: `${gutterWidth}px` }}
+                      className="absolute top-0 right-full h-full pr-2 flex items-start justify-end gap-1 pointer-events-auto"
+                    >
+                      <div className={`flex items-center gap-1 transition-all px-0.5 rounded-md ${
+                        idx === currentLine 
+                          ? 'text-emerald-600 dark:text-[#ABB2BF] bg-emerald-500/10 dark:bg-[#2C313C]/30 font-bold' 
+                          : 'text-gray-400 dark:text-[#4B5263]'
+                      }`}>
+                        {foldingEnabled && isHeading && (
+                          <button
+                            onClick={() => {
+                              setFoldedLines(prev => {
+                                const next = new Set(prev);
+                                if (next.has(idx)) next.delete(idx);
+                                else next.add(idx);
+                                return next;
+                              });
+                            }}
+                            className="hover:text-emerald-500 text-gray-400 cursor-pointer mt-1"
+                            title={isFolded ? "Espandi riga (zo)" : "Raggruppa riga (zc)"}
+                          >
+                            {isFolded ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+                          </button>
+                        )}
+                        <span className="mt-[1px]">{idx + 1}</span>
+                      </div>
+                    </div>
+                    {line || ' '}
+                  </div>
+                );
+              })}
+
+              {/* End-of-buffer rows (Vim `~`) filling the space left under the text */}
+              {Array.from({ length: eofRowCount }).map((_, i) => (
+                <div key={`eof-${i}`} className="relative w-full text-transparent">
+                  <div 
+                    style={{ width: `${gutterWidth}px` }}
+                    className="absolute top-0 right-full h-full pr-2 flex items-start justify-end pointer-events-none"
+                  >
+                    <span className="mt-[1px] text-gray-300 dark:text-[#343A46] select-none">~</span>
+                  </div>
+                  {' '}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Layer 2: Live Syntax & Search Backdrop Overlay */}
+          <div
+            ref={backdropRef}
+            className={`absolute top-0 bottom-0 right-0 p-4 box-border font-mono tracking-normal overflow-hidden pointer-events-none select-none ${
+              isSyntaxActive ? 'text-gray-800 dark:text-[#E0E0E0]' : 'text-transparent'
+            } z-20 ${
+              wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'
+            }`}
+            style={{
+              left: showLineNumbers ? `${gutterWidth}px` : '0px',
+              fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace',
+              fontSize: `${editorFontSize}px`,
+              lineHeight: '1.5',
+              tabSize: 4,
+              MozTabSize: 4,
+              scrollbarWidth: 'none',
+            }}
+            aria-hidden="true"
+          >
+            {renderHighlightedCode()}
+          </div>
+
+          {/* Layer 3: Textarea */}
+          <textarea
+            ref={textareaRef}
+            value={content}
+            readOnly={isReadMode}
+            inputMode={(!isReadMode && isSoftKeyboardActive) ? "text" : "none"}
+            onKeyDown={handleKeyDown}
+            onBeforeInput={handleBeforeInput}
+            onPointerDown={() => {
+              if (!isReadMode) {
+                handlePointerDown();
+                setIsSoftKeyboardActive(true);
+                onSoftKeyboardChange?.(true);
+              }
+            }}
+            onTouchStart={() => {
+              if (!isReadMode) {
+                handlePointerDown();
+                setIsSoftKeyboardActive(true);
+                onSoftKeyboardChange?.(true);
+              }
+            }}
+            onMouseDown={() => {
+              if (!isReadMode) handlePointerDown();
+            }}
+            onFocus={() => {
+              if (!isReadMode) {
+                setIsSoftKeyboardActive(true);
+                onSoftKeyboardChange?.(true);
+              }
+            }}
+            onBlur={() => {
+              // Soft keyboard status sync
+            }}
+            onSelect={handleSelect}
+            onChange={handleChange}
+            onScroll={handleScroll}
+            onPaste={handlePaste}
+            autoCapitalize="none"
+            autoCorrect="off"
+            className={`absolute top-0 bottom-0 right-0 p-4 box-border font-mono resize-none focus:outline-none tracking-normal overflow-y-auto z-30 ${
+              isSyntaxActive 
+                ? 'bg-transparent text-transparent' 
+                : 'bg-transparent text-gray-800 dark:text-[#E0E0E0]'
+            } caret-transparent ${
+              wordWrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre overflow-x-auto'
+            }`}
+            style={{ 
+              left: showLineNumbers ? `${gutterWidth}px` : '0px',
+              fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace',
+              fontSize: `${editorFontSize}px`,
+              lineHeight: '1.5',
+              tabSize: 4,
+              MozTabSize: 4
+            }}
+            spellCheck={false}
+            placeholder={lang === 'it' ? 'Inizia a scrivere qui...' : 'Start typing here...'}
+            id="livia-textarea"
+          />
+
+          {/* Floating Google Docs Style Edit Pen Action Button (FAB) - only on mobile/touch */}
+          {isTouchDevice && (
+            isReadMode ? (
+              <button
+                type="button"
+                onClick={openSoftKeyboard}
+                className="absolute bottom-6 right-6 z-40 bg-blue-600 dark:bg-[#8AB4F8] hover:bg-blue-700 dark:hover:bg-blue-400 text-white dark:text-[#0D0F12] shadow-xl hover:shadow-2xl rounded-full px-4 py-3.5 flex items-center gap-2.5 font-bold transition-all active:scale-95 cursor-pointer border-2 border-white dark:border-[#0D0F12]"
+                title={lang === 'it' ? 'Tocca la penna per accedere alla tastiera Gboard e modificare' : 'Tap pen to edit with Gboard keyboard'}
+                id="gdoc-pen-edit-fab"
+              >
+                <Pencil size={24} />
+                <span className="text-xs sm:text-sm font-sans font-bold pr-1">{lang === 'it' ? 'Modifica' : 'Edit'}</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsReadMode(true);
+                  setMode('normal');
+                  closeSoftKeyboard();
+                }}
+                className="absolute bottom-6 right-6 z-40 bg-emerald-600 hover:bg-emerald-700 text-white shadow-xl hover:shadow-2xl rounded-full px-3.5 py-3 flex items-center gap-2 font-bold transition-all active:scale-95 cursor-pointer border-2 border-white dark:border-[#0D0F12]"
+                title={lang === 'it' ? 'Completa modifica (Torna a vista di sola lettura)' : 'Finish editing (Return to clean reading mode)'}
+                id="gdoc-done-fab"
+              >
+                <Check size={24} />
+                <span className="text-xs sm:text-sm font-sans font-bold pr-1">{lang === 'it' ? 'Fatto' : 'Done'}</span>
+              </button>
+            )
+          )}
+
+        </div>
+
+        {/* Live Formatted Markdown & XML Rich Preview Pane */}
+        {(showPreview) && (
+          <div className="flex-1 bg-gray-50 dark:bg-[#0D0F12] p-4 sm:p-6 font-mono text-xs overflow-y-auto leading-6 select-text border-l border-gray-200 dark:border-[#1E2127] transition-colors duration-200"
+               style={{ fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace' }}>
+            {!isPreviewFullScreen && (
+              <div className="flex flex-wrap justify-between items-center border-b border-gray-200 dark:border-[#2D2D2D] pb-3 mb-4 gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-gray-700 dark:text-zinc-200 uppercase flex items-center gap-1.5 font-sans">
+                    <Sparkles size={13} className="text-[#8AB4F8]" /> {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
+                  </span>
+                  <span className="text-[10px] font-sans px-1.5 py-0.5 rounded bg-gray-200/60 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400">
+                    {lang === 'it' ? "Solo Lettura" : "Read Only"}
+                  </span>
+                </div>
+
+                {/* Preview Zoom & Fullscreen Controls */}
+                <div className="flex items-center gap-1.5 font-sans">
+                  {/* Dedicated Preview Zoom Regulator */}
+                  <div className="flex items-center gap-0.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg p-0.5 shadow-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(Math.max(50, previewZoom - 10))}
+                      className="p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                      title={lang === 'it' ? 'Riduci zoom anteprima (-)' : 'Zoom out preview (-)'}
+                    >
+                      <ZoomOut size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(100)}
+                      className="px-1.5 py-0.5 text-[11px] font-mono font-bold text-gray-700 dark:text-zinc-200 hover:text-blue-500 rounded transition-colors cursor-pointer"
+                      title={lang === 'it' ? 'Ripristina zoom 100%' : 'Reset zoom to 100%'}
+                    >
+                      {previewZoom}%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(Math.min(250, previewZoom + 10))}
+                      className="p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                      title={lang === 'it' ? 'Aumenta zoom anteprima (+)' : 'Zoom in preview (+)'}
+                    >
+                      <ZoomIn size={13} />
+                    </button>
+                  </div>
+
+                  {/* Fullscreen Toggle */}
+                  <button
+                    type="button"
+                    onClick={() => setIsPreviewFullScreen(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all cursor-pointer bg-white dark:bg-[#16181D] text-gray-700 dark:text-zinc-300 border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-100 dark:hover:bg-zinc-800"
+                    title={lang === 'it' ? 'Ingrandisci anteprima a schermo intero' : 'Maximize preview to fullscreen'}
+                  >
+                    <Maximize2 size={13} />
+                    <span>{lang === 'it' ? 'Schermo Intero' : 'Fullscreen'}</span>
+                  </button>
+
+                  {/* Close Preview */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowPreview(false);
+                      setIsPreviewFullScreen(false);
+                    }}
+                    className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-white rounded-lg transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Chiudi anteprima' : 'Close preview'}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+            )}
+            <div 
+              className={`transition-all duration-150 origin-top-left ${isPreviewFullScreen ? 'max-w-5xl mx-auto pt-2' : ''}`}
+              style={{ zoom: `${previewZoom}%` }}
+            >
+              {renderRichPreviewContent(content, format, theme)}
+            </div>
+          </div>
+        )}
+
+      </div>
+
+      {/* Vim Input Prompt (for / and :) (At the Bottom of viewport, standard Vim layout!) */}
+      {(mode === 'command' || mode === 'search') && (
+        <form 
+          onSubmit={mode === 'command' ? handleCommandSubmit : handleSearchSubmit}
+          className="bg-gray-50 dark:bg-[#0D0F12] px-3 py-3 sm:px-3 sm:py-2 border-t border-b border-gray-200 dark:border-[#1E2127] flex items-center gap-1.5 font-mono"
+        >
+          <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold text-lg sm:text-sm">
+            {mode === 'command' ? ':' : '/'}
+          </span>
+          <input
+            ref={commandInputRef}
+            type="text"
+            value={commandInput}
+            onChange={(e) => setCommandInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.preventDefault();
+                processVimKey('Escape');
+              } else if (e.key === 'ArrowUp') {
+                e.preventDefault();
+                handleHistoryNavigate('up');
+              } else if (e.key === 'ArrowDown') {
+                e.preventDefault();
+                handleHistoryNavigate('down');
+              }
+            }}
+            className="flex-1 bg-transparent border-none text-gray-800 dark:text-white focus:outline-none text-lg sm:text-sm font-bold placeholder-gray-400 dark:placeholder-zinc-700 min-w-0"
+            placeholder={
+              mode === 'command' 
+                ? (lang === 'it' ? "Comando ex o :q..." : "Ex command or :q...")
+                : (lang === 'it' ? "Parola da cercare..." : "Search pattern...")
+            }
+            autoFocus
+            id="vim-prompt-input"
+          />
+
+          {/* History navigation buttons for mobile touch & desktop */}
+          <div className="flex items-center gap-1 shrink-0">
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                handleHistoryNavigate('up');
+              }}
+              className="px-2 py-1 bg-gray-200 dark:bg-[#2C313C] hover:bg-gray-300 dark:hover:bg-[#3E4451] active:scale-95 text-gray-700 dark:text-zinc-200 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+              title={lang === 'it' ? 'Comando precedente nello storico (Frecce Su / Mobile ▲)' : 'Previous command in history (Up Arrow / Mobile ▲)'}
+              id="cmd-hist-up"
+            >
+              ▲ <span className="hidden sm:inline text-[10px]">{lang === 'it' ? 'Storico' : 'History'}</span>
+            </button>
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                handleHistoryNavigate('down');
+              }}
+              className="px-2 py-1 bg-gray-200 dark:bg-[#2C313C] hover:bg-gray-300 dark:hover:bg-[#3E4451] active:scale-95 text-gray-700 dark:text-zinc-200 rounded text-xs font-bold transition-all cursor-pointer flex items-center gap-1"
+              title={lang === 'it' ? 'Comando successivo nello storico (Frecce Giù / Mobile ▼)' : 'Next command in history (Down Arrow / Mobile ▼)'}
+              id="cmd-hist-down"
+            >
+              ▼
+            </button>
+            <button 
+              type="submit" 
+              className="bg-emerald-600 dark:bg-[#8AB4F8] text-white dark:text-[#0D0F12] text-xs font-bold px-3 py-1.5 rounded-lg hover:opacity-90 transition-opacity cursor-pointer shrink-0"
+              id="vim-prompt-submit"
+            >
+              {lang === 'it' ? 'Esegui' : 'Execute'}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Footer Status Bar (At the Absolute Bottom of Editor container, perfectly sticky!) */}
+      <footer className="relative h-7 min-h-[28px] flex items-center bg-emerald-600 dark:bg-[#8AB4F8] text-white dark:text-[#0D0F12] px-2 text-[11px] font-bold uppercase transition-colors duration-200">
+        <div className="relative flex items-center h-full">
+          {/* Direct Tap Mode Selector Button */}
+          <button
+            type="button"
+            onClick={() => setShowModeMenu(prev => !prev)}
+            className="bg-white/20 hover:bg-white/30 active:bg-white/40 dark:bg-[#0D0F12] dark:hover:bg-[#1E2127] text-white dark:text-[#8AB4F8] px-2.5 h-[22px] my-auto flex items-center gap-1.5 rounded tracking-wider font-mono cursor-pointer transition-all border border-white/25 dark:border-[#8AB4F8]/40 shadow-xs mr-1.5"
+            title={lang === 'it' ? 'Tocca per cambiare modalità (NORMAL, INSERT, VISUAL, V-LINE)' : 'Tap to switch mode (NORMAL, INSERT, VISUAL, V-LINE)'}
+            id="footer-mode-selector-btn"
+          >
+            <span>{mode === 'normal' ? 'NORMAL' : mode === 'visual' ? 'VISUAL' : mode === 'visual-line' ? 'V-LINE' : mode.toUpperCase()}</span>
+            <ChevronUp size={11} className={`transition-transform duration-200 ${showModeMenu ? 'rotate-180' : ''}`} />
+          </button>
+
+          {/* Gboard Soft Keyboard Status & Toggle Indicator - only on touch/mobile */}
+          {isTouchDevice && (
+            <button
+              type="button"
+              onClick={toggleSoftKeyboard}
+              className={`h-[22px] px-2 my-auto flex items-center gap-1 rounded text-[10px] font-bold font-mono cursor-pointer transition-all border shadow-xs ${
+                isSoftKeyboardActive
+                  ? 'bg-white text-emerald-700 dark:bg-[#0D0F12] dark:text-[#8AB4F8] border-white/60 dark:border-[#8AB4F8]'
+                  : 'bg-black/20 hover:bg-black/30 text-white/90 dark:text-zinc-900 border-transparent'
+              }`}
+              title={
+                isSoftKeyboardActive
+                  ? (lang === 'it' ? 'Tastiera Gboard attiva: tocca per nascondere' : 'Gboard keyboard active: tap to hide')
+                  : (lang === 'it' ? 'Tastiera Gboard nascosta: tocca per aprire' : 'Gboard keyboard hidden: tap to open')
+              }
+              id="footer-gboard-toggle-btn"
+            >
+              <Keyboard size={12} />
+              <span className="hidden xs:inline">
+                {isSoftKeyboardActive ? 'GBOARD ON' : 'GBOARD OFF'}
+              </span>
+            </button>
+          )}
+
+          {/* Mode Selection Popover Menu */}
+          {showModeMenu && (
+            <>
+              {/* Backdrop to close on tap outside */}
+              <div
+                className="fixed inset-0 z-40 bg-black/10 dark:bg-black/40"
+                onClick={() => setShowModeMenu(false)}
+              />
+              <div
+                className="absolute bottom-8 left-0 z-50 min-w-[210px] bg-white dark:bg-[#1E2127] border border-gray-200 dark:border-[#2C313C] rounded-lg shadow-2xl py-1 text-gray-800 dark:text-[#ABB2BF] text-xs font-sans normal-case animate-in fade-in slide-in-from-bottom-2 duration-150"
+                id="footer-mode-dropdown-menu"
+              >
+                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-gray-400 dark:text-zinc-500 tracking-wider border-b border-gray-100 dark:border-[#2C313C] flex items-center justify-between">
+                  <span>{lang === 'it' ? 'Cambia Modalità' : 'Switch Mode'}</span>
+                  <span className="text-[9px] font-mono text-emerald-600 dark:text-[#8AB4F8]">Vim</span>
+                </div>
+                <div className="py-1">
+                  {vimModesList.map((m) => {
+                    const isSelected = mode === m.key;
+                    return (
+                      <button
+                        key={m.key}
+                        type="button"
+                        onClick={() => handleSelectMode(m.key)}
+                        className={`w-full px-3 py-2 flex items-center justify-between text-left hover:bg-emerald-50 dark:hover:bg-[#2C313C] cursor-pointer transition-colors ${
+                          isSelected ? 'text-emerald-700 dark:text-[#8AB4F8] font-bold bg-emerald-50/80 dark:bg-[#2C313C]/80' : 'text-gray-700 dark:text-zinc-300'
+                        }`}
+                      >
+                        <div className="flex flex-col">
+                          <span className="font-mono text-xs font-bold tracking-wide flex items-center gap-1.5">
+                            {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-[#8AB4F8]"></span>}
+                            {m.label}
+                          </span>
+                          <span className="text-[10px] text-gray-500 dark:text-zinc-400 font-normal">
+                            {lang === 'it' ? m.descIt : m.descEn}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono font-semibold text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-[#0D0F12] border border-gray-200 dark:border-[#3E4451] px-1.5 py-0.5 rounded ml-2">
+                          {m.shortcut}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+        <div className="px-2.5 text-white dark:text-[#0D0F12] font-semibold tracking-tight truncate hidden sm:block min-w-0">
+          {filename}
+        </div>
+        <div className="flex-1 text-white/80 dark:text-zinc-800 italic text-[11px] lowercase normal-case px-2.5 truncate min-w-0">
+          {statusMessage}
+        </div>
+        <div className="px-2 hidden sm:block font-mono">UTF-8</div>
+        <div className="px-2 font-mono">{format}</div>
+        <div className="bg-black/15 dark:bg-[#2D2D2D] text-white dark:text-[#E0E0E0] px-2.5 h-full flex items-center font-mono">
+          {currentLine + 1}:{currentCol + 1}
+        </div>
+      </footer>
+
+      {/* Visual Keyboard Simulation Bar (For custom keys and snippets) */}
+      <div className="hidden">
+        {/* Allows Auxiliary Keyboard trigger via DOM callback */}
+        <button id="simulated-key-trigger" onClick={(e) => {
+          const k = e.currentTarget.getAttribute('data-key');
+          if (k) handleSimulatedKeyPress(k);
+        }} />
+        <button id="simulated-soft-keyboard-toggle" onClick={(e) => {
+          const stateAttr = e.currentTarget.getAttribute('data-state');
+          if (stateAttr === 'true') {
+            openSoftKeyboard();
+          } else if (stateAttr === 'false') {
+            closeSoftKeyboard();
+          } else {
+            toggleSoftKeyboard();
+          }
+        }} />
+        <button id="simulated-snippet-trigger" onClick={(e) => {
+          const text = e.currentTarget.getAttribute('data-text');
+          const offsetStr = e.currentTarget.getAttribute('data-offset');
+          if (text) {
+            const offset = offsetStr ? parseInt(offsetStr, 10) : 0;
+            // Insert snippet text at cursor position
+            pushToUndo(content);
+            const before = content.substring(0, cursorIndex);
+            const after = content.substring(cursorIndex);
+            const newText = before + text + after;
+            setContent(newText);
+            setCursorIndex(cursorIndex + offset);
+            setTimeout(() => {
+              focusEditor();
+            }, 50);
+          }
+        }} />
+        <button id="simulated-jump-trigger" onClick={(e) => {
+          const lineStr = e.currentTarget.getAttribute('data-line');
+          if (lineStr) {
+            const lineNum = parseInt(lineStr, 10);
+            const targetIdx = getIndexFromLineCol(content, lineNum, 0);
+            setCursorIndex(targetIdx);
+            
+            // Focus and scroll textarea
+            setTimeout(() => {
+              if (textareaRef.current) {
+                const text = textareaRef.current;
+                text.focus();
+                const lineHeight = 24; // leading-6 is 24px
+                const targetScrollTop = (lineNum - 4) * lineHeight;
+                text.scrollTop = Math.max(0, targetScrollTop);
+              }
+            }, 50);
+            
+            setStatusMessage(lang === 'it' ? `Spostato alla riga ${lineNum + 1}` : `Moved to line ${lineNum + 1}`);
+          }
+        }} />
+      </div>
+
+    </div>
+  );
+}

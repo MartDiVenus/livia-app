@@ -1,0 +1,42 @@
+{
+  "timeZone": "Europe/Rome",
+  "dependencies": {},
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/drive.file"
+  ],
+  "urlFetchWhitelist": [
+    "https://ais-dev-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/",
+    "https://ais-pre-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/"
+  ],
+  "addOns": {
+    "common": {
+      "name": "LiViA Editor™",
+      "logoUrl": "https://ais-pre-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/logo.png",
+      "layoutProperties": {
+        "primaryColor": "#059669",
+        "secondaryColor": "#1F2937"
+      },
+      "homepageTrigger": {
+        "runFunction": "onHomepage",
+        "enabled": true
+      }
+    },
+    "drive": {
+      "homepageTrigger": {
+        "runFunction": "onDriveHomepage",
+        "enabled": true
+      },
+      "onItemsSelectedTrigger": {
+        "runFunction": "onDriveItemsSelected"
+      }
+    },
+    "docs": {
+      "homepageTrigger": {
+        "runFunction": "onDocsHomepage",
+        "enabled": true
+      }
+    }
+  }
+}
