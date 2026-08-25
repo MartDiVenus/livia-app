@@ -264,10 +264,14 @@ How to deploy on GitHub Pages:
 ------------------------------------------------------------------------------
 If you installed LiViA as an Android App (PWA) and aren't receiving the latest updates,
 Chrome's Service Worker might be locking the offline cache. To force a clean update:
-1. Go to Android Settings > Apps > Chrome
-2. Select "Storage and cache"
-3. Tap "Manage space" then "Clear all data"
-⚠️ Warning: this is a radical procedure that will log you out of other Chrome websites.
+1. Uninstall the LiViA app from your device.
+2. Go to Android Settings > Apps > Chrome
+3. Select "Storage and cache"
+4. Tap "Manage space" then "Clear all data"
+5. Reinstall LiViA directly from the official URL:
+   https://martdivenus.github.io/livia-app
+
+⚠️ Warning: step 4 is a radical procedure that will log you out of other Chrome websites.
 Only recommended if the App refuses to update.
 
 ------------------------------------------------------------------------------
@@ -692,11 +696,15 @@ Come pubblicare su GitHub Pages:
 ------------------------------------------------------------------------------
 Se hai installato LiViA come App su Android (PWA) e non ricevi gli ultimi aggiornamenti,
 il Service Worker di Chrome potrebbe bloccarli nella cache offline. Per forzare un aggiornamento pulito:
-1. Vai in Impostazioni Android > App > Chrome
-2. Seleziona "Spazio di archiviazione e cache"
-3. Tocca "Gestisci spazio" e poi "Elimina tutti i dati"
-⚠️ Attenzione: questa procedura è radicale e ti disconnetterà dagli altri siti su Chrome.
-È consigliata solo se l'App non si aggiorna in alcun modo.
+1. Disinstalla l'app LiViA dal tuo dispositivo.
+2. Vai in Impostazioni Android > App > Chrome
+3. Seleziona "Spazio di archiviazione e cache"
+4. Tocca "Gestisci spazio" e poi "Elimina tutti i dati"
+5. Installa nuovamente LiViA direttamente dall'URL ufficiale:
+   https://martdivenus.github.io/livia-app
+
+⚠️ Attenzione: il passaggio 4 è radicale e ti disconnetterà dagli altri siti su Chrome.
+È consigliato solo se l'App non si aggiorna in alcun modo.
 
 ------------------------------------------------------------------------------
 11. PRESENTAZIONE E SISTEMI OPERATIVI SUPPORTATI

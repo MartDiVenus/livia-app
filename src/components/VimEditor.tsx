@@ -175,6 +175,20 @@ export function VimEditor({
 
   const extensions = [
     vim({ status: true }), 
+    EditorView.theme({
+      "&": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-content": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-scroller": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-tooltip": {
+        fontFamily: 'var(--font-mono)'
+      }
+    }),
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
         const head = update.state.selection.main.head;

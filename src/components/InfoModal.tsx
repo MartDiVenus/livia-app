@@ -83,6 +83,24 @@ export function InfoModal({
               : "Ultra-lightweight Vim-style text editor. Support for multiple languages, keyboard shortcuts, PDF, TEX, MD, DOCX export. Integration with Google Docs™, Google Drive™, Google Gemini™, and a terminal interface highly customizable via configuration files (.lvarc)."}
           </p>
 
+          {/* Quick Install Section */}
+          <div className="bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/60 rounded-xl p-3 space-y-2">
+            <div className="flex items-center gap-2 mb-1">
+              <Globe size={14} className="text-blue-500 dark:text-[#8AB4F8]" />
+              <span className="text-[11px] font-bold text-gray-700 dark:text-zinc-300">
+                {lang === 'it' ? 'Installazione Rapida (PWA):' : 'Quick Install (PWA):'}
+              </span>
+            </div>
+            <div className="font-mono text-[10.5px] text-blue-600 dark:text-[#8AB4F8] select-all bg-white dark:bg-[#0D0F12] p-1.5 rounded border border-blue-100 dark:border-blue-900/40">
+              https://martdivenus.github.io/livia-app
+            </div>
+            <p className="text-[10px] text-gray-600 dark:text-zinc-400 leading-snug">
+              {lang === 'it' 
+                ? 'Per gli aggiornamenti occorre seguire i passaggi descritti nella guida in "10. TROUBLESHOOTING (Android Updates)" e installare nuovamente LiViA dall\'URL specificato.'
+                : 'For updates, please follow the steps described in the guide under "10. TROUBLESHOOTING (Android Updates)" and reinstall LiViA from the specified URL.'}
+            </p>
+          </div>
+
           {/* Language Switcher Section */}
           <div className="bg-gray-50 dark:bg-[#0D0F12] border border-gray-200/80 dark:border-[#2D2D2D] rounded-xl p-3 space-y-2">
             <div className="flex items-center justify-between">
