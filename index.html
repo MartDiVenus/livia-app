@@ -6,11 +6,11 @@
     <title>LiViA Editor™ - Editor di Testo e Codice Vim per Google Drive™ e Google Docs™</title>
     <meta name="description" content="LiViA Editor™ è un editor di testo e codice in stile Vim ultra-leggero per Web, Google Drive™, Google Docs™, Android e Linux. Consente la creazione, modifica e formattazione di documenti .txt, .md, .docx, .py, .kt, .js, .ts e .tex direttamente tramite Google Drive™." />
     <meta name="application-name" content="LiViA Editor™" />
-    <link rel="manifest" href="/manifest.json" />
+    <link rel="manifest" href="manifest.json" />
     <meta name="theme-color" content="#111827" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black" />
-    <link rel="apple-touch-icon" href="/logo.png" />
+    <link rel="apple-touch-icon" href="logo-128x128.png" />
   </head>
   <body>
     <div id="root"></div>
@@ -18,7 +18,7 @@
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js').catch(error => {
+          navigator.serviceWorker.register('sw.js').catch(error => {
             console.error('ServiceWorker registration failed:', error);
           });
         });
