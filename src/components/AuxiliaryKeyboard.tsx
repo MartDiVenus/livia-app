@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   ArrowLeft, 
   ArrowRight, 
@@ -113,11 +113,10 @@ export function AuxiliaryKeyboard({
   const isVisual = mode === 'visual' || mode === 'visual-line';
 
   // Detect whether device is touch/mobile (Android, iOS, tablets) vs Desktop (Debian, Linux, PC)
-  const isTouchDevice = typeof window !== 'undefined' && (
-    ('ontouchstart' in window) || 
-    (navigator.maxTouchPoints > 0) || 
-    /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '')
-  );
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  useEffect(() => {
+    setIsTouchDevice(('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || ''));
+  }, []);
 
   return (
     <div className="bg-gray-100 dark:bg-[#16181D] border-t border-gray-200 dark:border-[#2D2D2D] p-2 select-none font-sans text-xs">
