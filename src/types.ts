@@ -26,6 +26,12 @@ export interface FileData {
   content: string;
 }
 
+export interface AiProfile {
+  id: string;
+  name: string;
+  instruction: string;
+}
+
 export const sanitizeText = (text: string): string => {
   return (text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 };
@@ -139,8 +145,9 @@ Google Gemini™ AI Commands & AI Models:
 - :gem <instructions>: Process document or visual selection with Google Gemini™ AI
                        (e.g., :gem summarize in 3 points, :gem proofread grammar,
                        :gem optimize this code)
-- :set model=flash   : Set Gemini™ 2.5 Flash model (Fast, free tier)
-- :set model=pro     : Set Gemini™ Pro model (Advanced reasoning for complex tasks)
+- :gem model flash   : Set Gemini™ Flash model (Fast, free tier)
+- :gem model pro     : Set Gemini™ Pro model (Advanced reasoning for complex tasks)
+- :gem which model   : Show the currently active Gemini™ model
 
 * Personal API Key on Google AI Studio™ (aistudio.google.com/app/apikey):
   - Metric Tracking Scope: Usage stats on Google AI Studio™ track strictly developer API calls
@@ -201,7 +208,7 @@ Example .lvarc configuration:
   set wrap
   set syntax=on
   set textwidth=80
-  set model=flash
+  gem model flash
   set folding=on
   set fontsize=12
   set theme=dark
@@ -350,6 +357,16 @@ This guide shows how to insert standard images, structured figures, and numbered
 Quick commands to open this guide:
 - \`:he figure md\`
 - \`:he figures md\`
+
+---
+
+## Image Insertion Methods
+Using the toolbar buttons (next to zoom, available for .md and .docx files), you can insert tables and images with a single click. For images, you have 4 main options:
+
+1. **From Google Drive**: Insert a shareable link directly.
+2. **Local File (Quick/Temp Blob)**: Generates an ephemeral URL (\`blob:http...\`). It is perfect for **quick PDF exports**: the image loads instantly and gets "printed" permanently into the PDF. However, if you close the app or reload the page, the URL dies and the preview image will break.
+3. **Local File (Embedded Base64)**: Converts the image into a very long text string appended to the bottom of the document and referenced in the text (e.g. \`![name][img-123]\`). Ideal if you need to save the .md file and reopen it later offline: the image is physically inside the file. Avoid very large files.
+4. **Upload to Cloud (Firebase)**: NOT POSSIBLE IN LiViA. Being an offline-first editor, LiViA does not connect to external buckets to upload files.
 
 ---
 
@@ -560,8 +577,9 @@ Google Gemini™ AI & Modelli IA:
 - :gem <istruzioni>  : Elabora il documento o la selezione con Google Gemini™ AI
                        (es: :gem riassumi in 3 punti, :gem correggi grammatica,
                        :gem ottimizza questo codice)
-- :set model=flash   : Imposta modello Gemini™ 2.5 Flash (Veloce, tier gratuito)
-- :set model=pro     : Imposta modello Gemini™ Pro (Ragionamento avanzato)
+- :gem model flash   : Imposta modello Gemini™ Flash (Veloce, tier gratuito)
+- :gem model pro     : Imposta modello Gemini™ Pro (Ragionamento avanzato)
+- :gem which model   : Mostra il modello Gemini™ attualmente in uso
 
 * API Key Personale Google AI Studio™ (aistudio.google.com/app/apikey):
   - Tracciamento Consumi & Statistiche: Le metriche su Google AI Studio™ misurano unicamente le
@@ -612,6 +630,8 @@ Opzioni Editor (:set):
 - :he / :help        : Apri questo manuale completo di istruzioni
 - :he gem / :he key  : Salta direttamente alla sezione Guida Gemini AI & API Key
 - :he vim / :he cmd  : Salta direttamente alla sezione Guida Comandi Vim
+- :he ai / :he gem   : Salta alla sezione Guida Gemini AI & AI Profiles
+- :he tab            : Apri la Guida Tabelle Formattate
 - :he drive          : Salta direttamente alla sezione Guida Google Drive™ & Workspace
 - :he color md       : Apri la guida alla formattazione colori
 - :he figure md      : Apri la guida a immagini e figure
@@ -631,7 +651,7 @@ Esempio di configurazione .lvarc:
   set wrap
   set syntax=on
   set textwidth=80
-  set model=flash
+  gem model flash
   set folding=on
   set fontsize=12
   set theme=dark
@@ -784,6 +804,24 @@ Comandi rapidi per aprire questa guida:
 - \`:he figures md\`
 
 ---
+
+## Metodi di Inserimento Immagini
+Grazie ai pulsanti nella barra degli strumenti (accanto allo zoom, disponibili per file .md e .docx), puoi inserire tabelle e immagini con un clic. Per le immagini hai 4 opzioni principali:
+
+1. **Da Google Drive**: IN LiViA QUESTO METODO NON E' SUPPORTATO IN AUTOMATICO. I file in memoria RAM virtuale (VFS) non possono estrarre binari da Drive senza permessi CORS specifici. Devi usare un URL pubblico puro, usare Base64, oppure inserire il blob temporaneo.
+2. **File Locale (Rapido/Temporaneo Blob)**: Genera un URL effimero (\`blob:http...\`). È perfetto per le **esportazioni PDF rapide**: l'immagine viene caricata istantaneamente e "stampata" nel PDF per sempre. Tuttavia, se chiudi l'app o ricarichi la pagina, l'URL muore e l'immagine nell'anteprima risulterà rotta.
+3. **File Locale (Incorporato Base64)**: Trasforma l'immagine in una lunghissima stringa di testo incollata in fondo al documento e referenziata nel testo (es. \`![nome][img-123]\`). Ideale se devi salvare il file .md e riaprirlo in futuro offline: l'immagine sarà fisicamente dentro il file. Evita file troppo pesanti.
+4. **Carica su Cloud (Firebase)**: NON POSSIBILE IN LiViA. Essendo un editor offline-first, LiViA non si collega a bucket esterni per caricare file.
+
+---
+
+
+**Perché non posso caricare direttamente immagini da Google Drive o Firebase nel VFS locale di LiViA?**
+LiViA funziona principalmente in un ambiente "offline-first" con un file system virtuale (VFS) in RAM basato su testo.
+- I file Markdown (.md) supportati dall'editor sono file puramente testuali. Non possono contenere binari.
+- Il browser applica rigorose policy di sicurezza (CORS) che impediscono all'editor di accedere ai pixel di immagini residenti su server cloud esterni se non specificamente autorizzati.
+- Le immagini generate tramite Blob URL sono sicure ma temporanee.
+- Pertanto, per inserire immagini persistenti, devi usare Base64 (che codifica l'immagine in puro testo) o usare URL pubblici assoluti.
 
 ## 1. Immagini Semplici in Markdown
 Sintassi standard: \`![Testo alternativo](URL_immagine)\`
@@ -1498,6 +1536,24 @@ Comandi rapidi per aprire questa guida:
 
 ---
 
+## Metodi di Inserimento Immagini
+Grazie ai pulsanti nella barra degli strumenti (accanto allo zoom, disponibili per file .md e .docx), puoi inserire tabelle e immagini con un clic. Per le immagini hai 4 opzioni principali:
+
+1. **Da Google Drive**: IN LiViA QUESTO METODO NON E' SUPPORTATO IN AUTOMATICO. I file in memoria RAM virtuale (VFS) non possono estrarre binari da Drive senza permessi CORS specifici. Devi usare un URL pubblico puro, usare Base64, oppure inserire il blob temporaneo.
+2. **File Locale (Rapido/Temporaneo Blob)**: Genera un URL effimero (\`blob:http...\`). È perfetto per le **esportazioni PDF rapide**: l'immagine viene caricata istantaneamente e "stampata" nel PDF per sempre. Tuttavia, se chiudi l'app o ricarichi la pagina, l'URL muore e l'immagine nell'anteprima risulterà rotta.
+3. **File Locale (Incorporato Base64)**: Trasforma l'immagine in una lunghissima stringa di testo incollata in fondo al documento e referenziata nel testo (es. \`![nome][img-123]\`). Ideale se devi salvare il file .md e riaprirlo in futuro offline: l'immagine sarà fisicamente dentro il file. Evita file troppo pesanti.
+4. **Carica su Cloud (Firebase)**: NON POSSIBILE IN LiViA. Essendo un editor offline-first, LiViA non si collega a bucket esterni per caricare file.
+
+---
+
+
+**Perché non posso caricare direttamente immagini da Google Drive o Firebase nel VFS locale di LiViA?**
+LiViA funziona principalmente in un ambiente "offline-first" con un file system virtuale (VFS) in RAM basato su testo.
+- I file Markdown (.md) supportati dall'editor sono file puramente testuali. Non possono contenere binari.
+- Il browser applica rigorose policy di sicurezza (CORS) che impediscono all'editor di accedere ai pixel di immagini residenti su server cloud esterni se non specificamente autorizzati.
+- Le immagini generate tramite Blob URL sono sicure ma temporanee.
+- Pertanto, per inserire immagini persistenti, devi usare Base64 (che codifica l'immagine in puro testo) o usare URL pubblici assoluti.
+
 ## 1. Immagini Semplici in Markdown
 Sintassi standard: \`![Testo alternativo](URL_immagine)\`
 
@@ -2198,8 +2254,8 @@ set syntax=on
 # Line width for 'gq' reformatting (set textwidth=80 or set tw=80)
 set textwidth=80
 
-# Google AI Gemini Model (set model=flash / set model=pro)
-set model=flash
+# Google AI Gemini Model (gem model flash / gem model pro)
+gem model flash
 
 # Code Folding for grouping sections (set folding=on / set folding=off)
 set folding=on
@@ -2233,8 +2289,8 @@ set syntax=on
 # Larghezza riga per riformattazione 'gq' (set textwidth=80 o set tw=80)
 set textwidth=80
 
-# Modello Google AI Gemini (set model=flash / set model=pro)
-set model=flash
+# Modello Google AI Gemini (gem model flash / gem model pro)
+gem model flash
 
 # Code Folding per raggruppare sezioni (set folding=on / set folding=off)
 set folding=on
@@ -2249,4 +2305,57 @@ set theme=dark
 set lang=it
 `
   };
+}
+
+
+export const HELP_AI_TEMPLATE: FileData = {
+  name: "help_ai.md",
+  format: "md",
+  content: `# Guida Gemini Gems & Profili AI in LiViA
+
+LiViA integra profondamente i modelli Google Gemini per aiutarti a scrivere, tradurre e modificare il testo.
+
+## 1. Comandi Rapidi Vim (AI)
+In modalità comando (premi Esc), puoi usare:
+- \`:ai <prompt>\` -> Analizza tutto il documento usando il prompt (es. \`:ai riassumi il testo\`).
+- \`:tr <lingua>\` -> Traduce l'intero documento o la selezione (es. \`:tr en\`, \`:tr it\`).
+- \`:lat <tema>\` -> Genera testo segnaposto (es. \`:lat standard\`, \`:lat tech\`).
+
+Se selezioni del testo (Visual mode), questi comandi agiranno **solo sulla selezione**.
+
+💡 **Suggerimento:** Poiché l'IA sostituisce o elabora il testo nell'editor, per chiudere o scartare la schermata di responso di Gemini tornando al testo originale ti basterà premere il tasto **\`u\`** (undo/annulla) in modalità normale.
+
+## 2. Gemini Gems (System Prompts)
+Puoi configurare profili AI (System Prompts) nelle Impostazioni.
+I profili AI fungono da "Direttive Superiori" per il modello Gemini.
+Quando selezioni un profilo dal menu a tendina sopra l'editor, l'istruzione di sistema viene iniettata automaticamente in tutte le chiamate AI successive, alterando in modo persistente il comportamento, il tono e le restrizioni del modello.
+`
+};
+
+export const HELP_AI_TEMPLATE_EN: FileData = {
+  name: "help_ai.md",
+  format: "md",
+  content: `# Guide to Gemini Gems & AI Profiles in LiViA
+
+LiViA deeply integrates Google Gemini models to help you write, translate, and edit text.
+
+## 1. Quick Vim Commands (AI)
+In command mode (press Esc), you can use:
+- \`:ai <prompt>\` -> Analyzes the whole document using the prompt (e.g. \`:ai summarize this text\`).
+- \`:tr <language>\` -> Translates the entire document or selection (e.g. \`:tr en\`, \`:tr it\`).
+- \`:lat <theme>\` -> Generates placeholder text (e.g. \`:lat standard\`, \`:lat tech\`).
+
+If you select text (Visual mode), these commands will act **only on the selection**.
+
+💡 **Tip:** Since the AI replaces or processes text in the editor, to close or discard the Gemini response and revert to your original text, simply press **\`u\`** (undo) in normal mode.
+
+## 2. Gemini Gems (System Prompts)
+You can configure AI Profiles (System Prompts) in the Settings.
+AI profiles act as "Higher Directives" for the Gemini model.
+When you select a profile from the dropdown above the editor, the system instruction is automatically injected into all subsequent AI calls, persistently altering the model's behavior, tone, and restrictions.
+`
+};
+
+export function getHelpAiTemplate(lang: 'it' | 'en'): FileData {
+  return lang === 'en' ? HELP_AI_TEMPLATE_EN : HELP_AI_TEMPLATE;
 }

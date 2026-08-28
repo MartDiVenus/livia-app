@@ -27,7 +27,9 @@ function stripMarkdownInline(text: string): string {
     .replace(/`([^`]+)`/g, '$1')          // inline code `code`
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links [text](url)
     .replace(/<color:[^>]+>(.*?)<\/color>/g, '$1') // custom color tags
-    .replace(/<[^>]+>/g, '');             // other html tags
+    .replace(/<[^>]+>/g, '')             // other html tags
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '') // remove inline images
+    .replace(/!\[([^\]]*)\]\[[^\]]+\]/g, ''); // remove inline ref images
 }
 
 /**
@@ -40,6 +42,35 @@ function stripMarkdownInline(text: string): string {
  */
 export async function exportToPDF(filename: string, content: string, includeHeader: boolean = true): Promise<void> {
   const cleanName = filename.replace(/\.[^/.]+$/, "");
+
+  // Helper to load image data
+  const loadImageData = async (url: string): Promise<{ dataUrl: string, width: number, height: number } | null> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      if (!url.startsWith('data:') && !url.startsWith('blob:')) {
+        img.crossOrigin = 'Anonymous';
+      }
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.drawImage(img, 0, 0);
+          resolve({ dataUrl: canvas.toDataURL('image/jpeg', 0.9), width: img.width, height: img.height });
+        } else resolve(null);
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+  };
+
+  const rawLines = content.split(/\r?\n/);
+  const references: Record<string, string> = {};
+  for (const line of rawLines) {
+    const refMatch = line.match(/^\[(.*?)\]:\s*(.+)$/);
+    if (refMatch) references[refMatch[1]] = refMatch[2].trim();
+  }
+
   const safeDocTitle = filename || cleanName || 'documento';
 
   const doc = new jsPDF({
@@ -68,7 +99,6 @@ export async function exportToPDF(filename: string, content: string, includeHead
     }
   };
 
-  const rawLines = content.split(/\r?\n/);
   let inCodeBlock = false;
   let codeBlockLines: string[] = [];
 
@@ -117,6 +147,51 @@ export async function exportToPDF(filename: string, content: string, includeHead
         codeBlockLines = [];
       }
       continue;
+    }
+    
+    // Ignore reference link definitions in the output
+    if (trimmed.match(/^\[(.*?)\]:\s*(.+)$/)) continue;
+
+    // Detect images on their own lines or isolated
+    const imgMatch = trimmed.match(/^!\[(.*?)\]\((.*?)\)/);
+    const refImgMatch = trimmed.match(/^!\[(.*?)\]\[(.*?)\]/);
+    
+    if (imgMatch || refImgMatch) {
+      let url = '';
+      if (imgMatch) {
+        url = imgMatch[2];
+      } else if (refImgMatch) {
+        const refKey = refImgMatch[2];
+        url = references[refKey] || '';
+      }
+      
+      if (url) {
+        if (url.includes('drive.google.com')) {
+            const driveIdMatch = url.match(/\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
+            if (driveIdMatch && driveIdMatch[1]) {
+              // The thumbnail endpoint is currently the most reliable way to hotlink Drive images
+              url = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1000`;
+            }
+          }
+        
+        const imgData = await loadImageData(url);
+        if (imgData) {
+          // Calculate dimensions to fit width
+          const maxWidth = contentWidth;
+          const scale = Math.min(1, maxWidth / imgData.width);
+          const drawWidth = imgData.width * scale;
+          const drawHeight = imgData.height * scale;
+          
+          checkPageBreak(drawHeight + 20);
+          
+          // Center image
+          const xOffset = leftMargin + (contentWidth - drawWidth) / 2;
+          currentY += 10;
+          doc.addImage(imgData.dataUrl, 'JPEG', xOffset, currentY, drawWidth, drawHeight);
+          currentY += drawHeight + 15;
+          continue;
+        }
+      }
     }
 
     if (inCodeBlock) {

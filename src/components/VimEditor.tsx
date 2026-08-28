@@ -9,7 +9,7 @@ import { Prec } from '@codemirror/state';
 import { insertTab } from '@codemirror/commands';
 import { foldService, foldCode, unfoldCode } from '@codemirror/language';
 import { VimMode, FileFormat } from '../types';
-import { Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp } from 'lucide-react';
+import { Code, Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
 import { renderRichPreviewContent } from '../utils/previewRenderer';
 
 interface VimEditorProps {
@@ -26,10 +26,13 @@ interface VimEditorProps {
   editorFontSize: number;
   setEditorFontSize?: (val: number) => void;
   syntaxHighlightOn: boolean;
+  setSyntaxHighlightOn?: (val: boolean) => void;
   onSaveFileState: (name: string, content: string) => void;
   onReadFileState: (name: string) => string | null;
   onOpenFileState?: (targetName: string) => { found: boolean; name: string };
+  onCloseFileState?: (force: boolean) => { success: boolean; message: string; isEmptyHistory?: boolean };
   onShowHelp?: (topic?: string) => void;
+  onAiCommand?: (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string) => void) => Promise<void>;
   lang?: 'it' | 'en';
   setLang?: (lang: 'it' | 'en') => void;
   onOpenGoogleDocsModal?: () => void;
@@ -53,10 +56,13 @@ export function VimEditor({
   editorFontSize,
   setEditorFontSize,
   syntaxHighlightOn,
+  setSyntaxHighlightOn,
   onSaveFileState,
   onReadFileState,
   onOpenFileState,
+  onCloseFileState,
   onShowHelp,
+  onAiCommand,
   lang = 'en',
   setLang,
   onOpenGoogleDocsModal,
@@ -67,10 +73,47 @@ export function VimEditor({
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const isInsertModeRef = useRef(false);
-
   const [showModeMenu, setShowModeMenu] = useState(false);
+  const [showTableMenu, setShowTableMenu] = useState(false);
+  const [showImageMenu, setShowImageMenu] = useState(false);
+
+  const fileInputRefTemp = useRef<HTMLInputElement>(null);
+  const fileInputRefBase64 = useRef<HTMLInputElement>(null);
+
+  const insertAtCursor = (text: string, offset?: number) => {
+    if (!editorRef.current?.view) return;
+    const view = editorRef.current.view;
+    const pos = view.state.selection.main.head;
+    view.dispatch({
+        changes: { from: pos, to: pos, insert: text },
+        selection: { anchor: pos + (offset !== undefined ? offset : text.length) }
+    });
+    view.contentDOM.focus();
+  };
+
+  const appendToBottom = (text: string) => {
+    if (!editorRef.current?.view) return;
+    const view = editorRef.current.view;
+    const end = view.state.doc.length;
+    view.dispatch({
+        changes: { from: end, to: end, insert: text }
+    });
+  };
+
   const [currentMode, setCurrentMode] = useState<VimMode>('normal');
+  const currentModeRef = useRef<VimMode>('normal');
+  const flashMessageTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const showFlashMessage = (msg: string, duration = 4000) => {
+    setStatusMessage(msg);
+    if (flashMessageTimeoutRef.current) clearTimeout(flashMessageTimeoutRef.current);
+    flashMessageTimeoutRef.current = setTimeout(() => {
+      flashMessageTimeoutRef.current = null;
+      setStatusMessage(`-- ${currentModeRef.current.toUpperCase()} MODE --`);
+    }, duration);
+  };
   const [isTouchDevice, setIsTouchDevice] = useState(false);
+
   useEffect(() => {
     setIsTouchDevice(('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || ''));
   }, []);
@@ -107,13 +150,21 @@ export function VimEditor({
 
   const [showPreview, setShowPreview] = useState(false);
   const [isPreviewFullScreen, setIsPreviewFullScreen] = useState(false);
+  const [isMasterCopied, setIsMasterCopied] = useState(false);
+
+  const handleMasterCopy = () => {
+    navigator.clipboard.writeText(content);
+    setIsMasterCopied(true);
+    setTimeout(() => setIsMasterCopied(false), 2000);
+  };
+
   const [previewZoom, setPreviewZoom] = useState(100);
   const [statusMessage, setStatusMessage] = useState(
     lang === 'it' ? 'Benvenuto in LiViA. Premi "i" per scrivere, o :h per la guida.' : 'Welcome to LiViA. Press "i" to write, or :h for help.'
   );
+
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
 
-  
   const customFoldService = foldService.of((state, lineStart, lineEnd) => {
     const doc = state.doc;
     const line = doc.lineAt(lineStart);
@@ -122,7 +173,7 @@ export function VimEditor({
     
     const latexLevels = ['chapter', 'section', 'subsection', 'subsubsection', 'paragraph', 'subparagraph'];
     
-    // 1. \begin ... \end
+    // 1. egin ... \end
     const beginMatch = trimmed.match(/^\\begin\{([^}]+)\}/);
     if (beginMatch) {
       const envName = beginMatch[1];
@@ -194,6 +245,7 @@ export function VimEditor({
           }
           nextLineNum++;
         }
+
         if (nextLineIndent > indent) {
           let endLine = nextLineNum;
           for (let i = nextLineNum + 1; i <= doc.lines; i++) {
@@ -212,10 +264,12 @@ export function VimEditor({
   });
 
   const extensions = [
-    vim({ status: true }), 
+    vim({ status: true }),
+    
     EditorView.contentAttributes.of({
       inputmode: (isSoftKeyboardOpen === false) ? 'none' : 'text',
     }),
+
     EditorView.theme({
       "&": {
         fontFamily: 'var(--font-mono)'
@@ -230,6 +284,7 @@ export function VimEditor({
         fontFamily: 'var(--font-mono)'
       }
     }),
+
     EditorView.updateListener.of((update) => {
       if (update.selectionSet || update.docChanged) {
         const head = update.state.selection.main.head;
@@ -237,10 +292,12 @@ export function VimEditor({
         setCursorPos({ line: line.number, col: head - line.from + 1 });
       }
     }),
+
     customFoldService,
-    Prec.highest(keymap.of([{ 
-      key: 'Tab', 
-      run: (view) => {
+
+    Prec.highest(keymap.of([{
+       key: 'Tab',
+       run: (view) => {
         const cm = (view as any).cm;
         const isInsert = cm?.state?.vim?.insertMode || false;
         if (!isInsert) return false;
@@ -251,6 +308,7 @@ export function VimEditor({
       }
     }]))
   ];
+
   if (syntaxHighlightOn) {
     if (format === 'md') extensions.push(markdown({ base: markdownLanguage }));
     if (format === 'js' || format === 'ts') extensions.push(javascript());
@@ -262,8 +320,8 @@ export function VimEditor({
   }
 
   // Handle Tab key overriding CodeMirror defaults in Insert mode
-  // The \`vim\` extension handles Insert mode keymaps, so we let CodeMirror's basicSetup or custom extension handle it.
-  
+  // The `vim` extension handles Insert mode keymaps, so we let CodeMirror's basicSetup or custom extension handle it.
+
   useEffect(() => {
     // Custom Vim commands mapping
     Vim.defineAction('fold', (cm) => {
@@ -272,18 +330,298 @@ export function VimEditor({
     Vim.defineAction('unfold', (cm) => {
        if (editorRef.current?.view) unfoldCode(editorRef.current.view);
     });
+
     Vim.mapCommand('zc', 'action', 'fold', {}, {});
     Vim.mapCommand('zo', 'action', 'unfold', {}, {});
     
     Vim.defineEx('write', 'w', () => {
       onSaveFileState(filename, content);
-      setStatusMessage(lang === 'it' ? `"${filename}" salvato.` : `"${filename}" written.`);
+      showFlashMessage(lang === 'it' ? `"${filename}" salvato.` : `"${filename}" written.`);
     });
     
+    Vim.defineEx('edit', 'e', (cm: any, params: any) => {
+      const target = params?.args?.[0];
+      if (!target) {
+         showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
+         return;
+      }
+      if (onOpenFileState) {
+         onSaveFileState(filename, content); 
+         const res = onOpenFileState(target);
+         if (res && res.found) {
+            showFlashMessage(lang === 'it' ? `Aperto "${res.name}"` : `Opened "${res.name}"`);
+         } else if (res && !res.found) {
+            showFlashMessage(lang === 'it' ? `Nuovo file "${res.name}"` : `New file "${res.name}"`);
+         }
+      }
+    });
+
+    Vim.defineEx('quit', 'q', (cm: any, params: any) => {
+      const force = params?.argString?.trim() === '!';
+      if (onCloseFileState) {
+         const res = onCloseFileState(force);
+         if (res && res.message) {
+            showFlashMessage(res.message);
+         }
+         if (res && res.closedAll) {
+            showFlashMessage(lang === 'it' ? 'Ultimo file chiuso' : 'Last file closed');
+         }
+      }
+    });
+
+    Vim.defineEx('wq', 'wq', (cm: any, params: any) => {
+      const force = params?.argString?.trim() === '!';
+      onSaveFileState(filename, content);
+      if (onCloseFileState) {
+         const res = onCloseFileState(true); 
+         if (res && res.message) {
+            showFlashMessage(res.message);
+         }
+      }
+    });
+
+    Vim.map('ZZ', ':wq<CR>', 'normal');
+
+    Vim.defineEx('model', 'model', (cm: any, params: any) => {
+      const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
+      let modelLabel = '3.7 Flash';
+      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
+      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
+      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
+    });
+
+    Vim.defineEx('tier', 'tier', (cm: any, params: any) => {
+      const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
+      let modelLabel = '3.7 Flash';
+      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
+      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
+      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
+    });
+
+    Vim.defineEx('lang', 'lang', (cm: any, params: any) => {
+      const arg = params?.argString?.trim()?.replace('?', '');
+      if (arg === 'it' || arg === 'it') {
+         if (setLang) setLang('it');
+         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
+      } else if (arg === 'en') {
+         if (setLang) setLang('en');
+         showFlashMessage('✓ Language set to English (EN).');
+      } else {
+         const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
+         showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
+      }
+    });
+
+    Vim.defineEx('language', 'language', (cm: any, params: any) => {
+      const arg = params?.argString?.trim()?.replace('?', '');
+      if (arg === 'it' || arg === 'it') {
+         if (setLang) setLang('it');
+         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
+      } else if (arg === 'en') {
+         if (setLang) setLang('en');
+         showFlashMessage('✓ Language set to English (EN).');
+      } else {
+         const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
+         showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
+      }
+    });
+
+    Vim.defineEx('credits', 'credits', (cm: any, params: any) => {
+      const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+      if (customKey) {
+        showFlashMessage(lang === 'it' 
+          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
+          : '✓ Personal API key active. Check exact usage & quotas on AI Studio.');
+      } else {
+        showFlashMessage(lang === 'it'
+          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
+          : '✓ You are using the shared platform Secret API key (Free tier).');
+      }
+    });
+
+    Vim.defineEx('quota', 'quota', (cm: any, params: any) => {
+      const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+      if (customKey) {
+        showFlashMessage(lang === 'it' 
+          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
+          : '✓ Personal API key active. Check exact usage & quotas on AI Studio.');
+      } else {
+        showFlashMessage(lang === 'it'
+          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
+          : '✓ You are using the shared platform Secret API key (Free tier).');
+      }
+    });
+
+    Vim.defineEx('set', 'set', (cm: any, params: any) => {
+      const param = params?.argString?.trim();
+      if (!param) return;
+      if (param.includes('model=flash-lite')) {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
+      } else if (param.includes('model=flash')) {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
+      } else if (param.includes('model=pro-thinking')) {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
+      } else if (param.includes('model=pro')) {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
+      } else if (param.includes('lang=it') || param.includes('language=it')) {
+         if (setLang) setLang('it');
+         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
+      } else if (param.includes('lang=en') || param.includes('language=en')) {
+         if (setLang) setLang('en');
+         showFlashMessage('✓ Language set to English (EN).');
+      }
+    });
+
     Vim.defineEx('help', 'h', (cm: any, params: any) => {
       if (onShowHelp) onShowHelp(params?.args?.[0]);
     });
-  }, [filename, content, lang, onSaveFileState, onShowHelp]);
+
+    Vim.defineEx('gemini', 'gem', (cm: any, params: any) => {
+      let arg = params?.argString?.trim();
+      if (!arg) {
+        showFlashMessage(lang === 'it' ? 'Specifica un prompt (es. :gem correggi).' : 'Specify a prompt (e.g. :gem fix errors).');
+        return;
+      }
+      
+      const argLower = arg.toLowerCase();
+      if (argLower === 'which model' || argLower === 'model' || argLower === 'model?' || argLower === 'tier' || argLower === 'tier?') {
+         const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
+      let modelLabel = '3.7 Flash';
+      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
+      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
+      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
+         return;
+      }
+      if (argLower === 'set model=flash-lite' || argLower === 'model flash-lite') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
+         return;
+      }
+      if (argLower === 'set model=flash' || argLower === 'model flash') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
+         return;
+      }
+      if (argLower === 'set model=pro-thinking' || argLower === 'model pro-thinking') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
+         return;
+      }
+      if (argLower === 'set model=pro' || argLower === 'model pro') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
+         return;
+      }
+      if (argLower === 'credits' || argLower === 'quota') {
+         const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
+         if (customKey) {
+           showFlashMessage(lang === 'it' ? '✓ Chiave API personale attiva.' : '✓ Personal API key active.');
+         } else {
+           showFlashMessage(lang === 'it' ? '✓ Usando la chiave di sistema (Gratuita).' : '✓ Using shared platform key (Free tier).');
+         }
+         return;
+      }
+
+      if (onAiCommand) {
+        const isSelection = cm.somethingSelected();
+        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
+        const onInsert = (newText: string) => {
+            if (isSelection) cm.replaceSelection(newText);
+            else cm.setValue(newText);
+        };
+        // Log to console to debug just in case
+        console.log("Sending AI command prompt:", arg);
+        onAiCommand('prompt', arg, textToProcess, isSelection, onInsert);
+      }
+    });
+
+    Vim.defineEx('ai', 'ai', (cm: any, params: any) => {
+      let arg = params?.argString?.trim();
+      if (!arg) {
+        showFlashMessage(lang === 'it' ? 'Specifica un prompt.' : 'Specify a prompt.');
+        return;
+      }
+      
+      const argLower = arg.toLowerCase();
+      if (argLower === 'which model' || argLower === 'model' || argLower === 'model?' || argLower === 'tier' || argLower === 'tier?') {
+         const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
+      let modelLabel = '3.7 Flash';
+      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
+      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
+      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
+         return;
+      }
+      if (argLower === 'set model=flash-lite' || argLower === 'model flash-lite') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
+         return;
+      }
+      if (argLower === 'set model=flash' || argLower === 'model flash') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
+         return;
+      }
+      if (argLower === 'set model=pro-thinking' || argLower === 'model pro-thinking') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
+         return;
+      }
+      if (argLower === 'set model=pro' || argLower === 'model pro') {
+         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
+         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
+         return;
+      }
+
+      if (onAiCommand) {
+        const isSelection = cm.somethingSelected();
+        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
+        const onInsert = (newText: string) => {
+            if (isSelection) cm.replaceSelection(newText);
+            else cm.setValue(newText);
+        };
+        console.log("Sending AI command ai:", arg);
+        onAiCommand('prompt', arg, textToProcess, isSelection, onInsert);
+      }
+    });
+
+    Vim.defineEx('translate', 'tr', (cm: any, params: any) => {
+      const arg = params?.argString?.trim();
+      if (onAiCommand) {
+        const isSelection = cm.somethingSelected();
+        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
+        const onInsert = (newText: string) => {
+           if (isSelection) cm.replaceSelection(newText);
+           else cm.setValue(newText);
+        };
+        console.log("Sending AI command translate:", arg);
+        onAiCommand('translate', arg || 'Italian', textToProcess, isSelection, onInsert);
+      }
+    });
+
+    Vim.defineEx('latin', 'lat', (cm: any, params: any) => {
+      const arg = params?.argString?.trim() || 'random';
+      if (onAiCommand) {
+        const isSelection = cm.somethingSelected();
+        const onInsert = (newText: string) => {
+           if (isSelection) cm.replaceSelection(newText);
+           else {
+             const doc = cm.getDoc();
+             const cursor = doc.getCursor();
+             doc.replaceRange(newText + '\n', cursor);
+           }
+        };
+        onAiCommand('latin', arg, '', isSelection, onInsert);
+      }
+    });
+  }, [filename, content, lang, onSaveFileState, onShowHelp, onAiCommand]);
 
   useEffect(() => {
     if (editorRef.current?.view && isSoftKeyboardOpen) {
@@ -306,9 +644,13 @@ export function VimEditor({
         if (e.subMode === 'linewise') m = 'visual-line';
         else m = 'visual';
       }
+
       if (onModeChange) onModeChange(m);
       setCurrentMode(m);
-      setStatusMessage(`-- ${m.toUpperCase()} MODE --`);
+      currentModeRef.current = m;
+      if (!flashMessageTimeoutRef.current) {
+        setStatusMessage(`-- ${m.toUpperCase()} MODE --`);
+      }
     };
     
     const view = editorRef.current?.view;
@@ -323,81 +665,212 @@ export function VimEditor({
 
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] text-gray-900 dark:text-[#E0E0E0] transition-colors duration-200 min-w-0 min-h-0 overflow-hidden">
+      
       {/* Header Bar */}
       <div className="bg-gray-50 dark:bg-[#16181D] px-4 py-3 sm:px-4 sm:py-2 flex flex-wrap justify-between items-center gap-2 text-lg sm:text-xs text-gray-500 dark:text-zinc-400 border-b border-gray-200 dark:border-[#2D2D2D] font-sans">
         {showPreview && isPreviewFullScreen ? (
+          /* PREVIEW FULLSCREEN REPLACEMENT TOOLBAR */
           <>
             <div className="flex items-center gap-2 sm:gap-3">
               <span className="flex items-center gap-1.5 font-bold text-gray-800 dark:text-zinc-100 font-sans text-sm sm:text-xs uppercase">
                 <Sparkles size={16} className="text-[#8AB4F8]" />
                 {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
               </span>
+              <span className="text-[10px] font-sans px-2 py-0.5 rounded bg-gray-200/80 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 font-semibold">
+                {lang === 'it' ? "Solo Lettura" : "Read Only"}
+              </span>
             </div>
+
             <div className="flex items-center gap-2 font-sans">
+              {/* Dedicated Preview Zoom Regulator */}
               <div className="flex items-center gap-0.5 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 shadow-xs">
                 <button
                   type="button"
                   onClick={() => setPreviewZoom(Math.max(50, previewZoom - 10))}
-                  className="p-1.5 sm:p-1 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Riduci zoom anteprima (-)' : 'Zoom out preview (-)'}
                 >
-                  <ZoomOut size={20} className="sm:size-[14px]" />
+                  <ZoomOut size={16} className="sm:size-[13px]" />
                 </button>
-                <span className="text-sm sm:text-[10px] font-mono font-bold px-2 py-1 w-12 text-center text-gray-700 dark:text-zinc-300">
-                  {previewZoom}%
-                </span>
                 <button
                   type="button"
-                  onClick={() => setPreviewZoom(Math.min(200, previewZoom + 10))}
-                  className="p-1.5 sm:p-1 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                  onClick={() => setPreviewZoom(100)}
+                  className="px-2 py-0.5 text-xs sm:text-[11px] font-mono font-bold text-gray-700 dark:text-zinc-200 hover:text-blue-500 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Ripristina zoom 100%' : 'Reset zoom to 100%'}
                 >
-                  <ZoomIn size={20} className="sm:size-[14px]" />
+                  {previewZoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(Math.min(250, previewZoom + 10))}
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Aumenta zoom anteprima (+)' : 'Zoom in preview (+)'}
+                >
+                  <ZoomIn size={16} className="sm:size-[13px]" />
                 </button>
               </div>
+
+              {/* Split View Toggle */}
               <button
                 type="button"
                 onClick={() => setIsPreviewFullScreen(false)}
-                className="p-2 sm:p-1.5 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] text-gray-600 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-white rounded-xl sm:rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all flex items-center justify-center shadow-xs"
+                className="flex items-center gap-1.5 px-3 py-2 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg text-sm sm:text-xs font-bold border transition-all cursor-pointer bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/40 dark:text-[#8AB4F8] dark:border-blue-900 shadow-xs"
+                title={lang === 'it' ? 'Torna a vista affiancata' : 'Switch to split view'}
               >
-                <Minimize2 size={20} className="sm:size-[14px]" />
+                <Minimize2 size={16} className="sm:size-[13px]" />
+                <span>{lang === 'it' ? 'Vista Affiancata' : 'Split View'}</span>
               </button>
+
+              {/* Close Preview Button */}
               <button
                 type="button"
-                onClick={() => setShowPreview(false)}
-                className="p-2 sm:p-1.5 bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-800/50 dark:text-emerald-400 rounded-xl sm:rounded-lg font-bold hover:bg-emerald-100 dark:hover:bg-emerald-900/50 transition-all flex items-center justify-center shadow-xs"
+                onClick={() => {
+                  setShowPreview(false);
+                  setIsPreviewFullScreen(false);
+                }}
+                className="p-2 sm:p-1.5 text-gray-500 hover:text-red-600 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-xl sm:rounded-lg transition-colors cursor-pointer"
+                title={lang === 'it' ? 'Chiudi anteprima' : 'Close preview'}
               >
-                <X size={20} className="sm:size-[14px]" />
+                <X size={20} className="sm:size-[16px]" />
               </button>
             </div>
           </>
         ) : (
+          /* STANDARD EDITING TOOLBAR */
           <>
             <div className="flex items-center gap-3">
               <span className="font-mono text-gray-800 dark:text-zinc-200 font-bold truncate max-w-[200px] text-base sm:text-xs">
                 {filename}
               </span>
             </div>
+
             <div className="flex items-center gap-2">
-              {(format === 'md' || format === 'html' || format === 'svg') && (
+              
+              {/* Table & Image Inserts (MD/DOCX only) */}
+              {(format === 'md' || format === 'docx') && (
+                <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 mr-1 relative">
+                  
+                  {/* Table Dropdown */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => { setShowTableMenu(!showTableMenu); setShowImageMenu(false); }}
+                      className={`p-1.5 sm:p-1 rounded-lg transition-colors ${showTableMenu ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'}`}
+                      title={lang === 'it' ? 'Inserisci Tabella' : 'Insert Table'}
+                    >
+                      <Table size={20} className="sm:size-[14px]" />
+                    </button>
+                    {showTableMenu && (
+                      <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg shadow-xl z-50 overflow-hidden font-sans">
+                        <button onClick={() => { insertAtCursor(`\n| Colonna 1 | Colonna 2 |\n|---|---|\n| Dato 1 | Dato 2 |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Semplice (2x2)</button>
+                        <button onClick={() => { insertAtCursor(`\n| Colonna 1 | Colonna 2 | Colonna 3 |\n|---|---|---|\n| Dato 1 | Dato 2 | Dato 3 |\n| Dato 4 | Dato 5 | Dato 6 |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Media (3x3)</button>
+                        <button onClick={() => { insertAtCursor(`\n| Allineata a Sinistra | Centrata | Allineata a Destra |\n| :--- | :---: | ---: |\n| Testo | Testo | Testo |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella con Allineamenti</button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Image Dropdown */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => { setShowImageMenu(!showImageMenu); setShowTableMenu(false); }}
+                      className={`p-1.5 sm:p-1 rounded-lg transition-colors ${showImageMenu ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'}`}
+                      title={lang === 'it' ? 'Inserisci Immagine' : 'Insert Image'}
+                    >
+                      <ImageIcon size={20} className="sm:size-[14px]" />
+                    </button>
+                    {showImageMenu && (
+                      <div className="absolute top-full right-0 mt-1 w-64 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg shadow-xl z-50 overflow-hidden font-sans flex flex-col">
+                            <button onClick={() => { 
+                               fileInputRefTemp.current?.click();
+                              setShowImageMenu(false);
+                            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300 flex items-center gap-2">
+                              <FilePlus size={12} className="text-emerald-500" /> {lang === 'it' ? 'File Locale (Rapido/Temporaneo Blob)' : 'Local File (Quick/Temp Blob)'}
+                            </button>
+                            <button onClick={() => { 
+                               fileInputRefBase64.current?.click();
+                              setShowImageMenu(false);
+                            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300 flex items-center gap-2">
+                              <HardDrive size={12} className="text-amber-500" /> {lang === 'it' ? 'File Locale (Incorporato Base64)' : 'Local File (Embedded Base64)'}
+                            </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Font Size Adjusters (A- / A+) */}
+              {setEditorFontSize && (
+                <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 sm:p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.max(12, editorFontSize - 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Riduci dimensione testo' : 'Decrease text size'}
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sizes = [12, 14, 18, 24, 30, 32, 36, 40, 48];
+                      const currentIdx = sizes.indexOf(editorFontSize);
+                      const nextSize = sizes[(currentIdx + 1) % sizes.length];
+                      setEditorFontSize(nextSize);
+                    }}
+                    className="text-xs sm:text-sm sm:text-[10px] font-mono px-2 sm:px-1 font-bold text-gray-700 dark:text-zinc-300 hover:text-blue-500 cursor-pointer"
+                    title={lang === 'it' ? 'Tocca per scorrere dimensioni (12, 14, 18, 24, 30, 32, 36, 40, 48px)' : 'Tap to cycle preset font sizes'}
+                  >
+                    {editorFontSize}px
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.min(48, editorFontSize + 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Aumenta dimensione testo fino a 48px' : 'Increase text size up to 48px'}
+                  >
+                    A+
+                  </button>
+                </div>
+              )}
+
+
+              {setSyntaxHighlightOn && (
                 <button
-                  type="button"
-                  onClick={() => setShowPreview(!showPreview)}
+                  onClick={() => setSyntaxHighlightOn(!syntaxHighlightOn)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg font-bold transition-all shadow-xs active:scale-95 cursor-pointer text-sm sm:text-[10px] uppercase tracking-wide border ${
-                    showPreview 
-                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-800/50 dark:text-emerald-400 hover:bg-emerald-100' 
+                    syntaxHighlightOn
+                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-900/30 dark:border-amber-800/50 dark:text-amber-400 hover:bg-amber-100'
                       : 'bg-white dark:bg-[#0D0F12] text-gray-600 dark:text-zinc-400 border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800 hover:text-gray-900 dark:hover:text-zinc-200'
                   }`}
+                  title={lang === 'it' ? "Attiva/Disattiva Evidenziazione Sintassi (:set syntax=on|off)" : "Toggle Syntax Highlighting (:set syntax=on|off)"}
+                  id="toggle-syntax-btn"
                 >
-                  {showPreview ? <Edit3 size={24} className="sm:size-[13px]" /> : <Eye size={24} className="sm:size-[13px]" />}
-                  <span className="hidden sm:inline">{showPreview ? (lang === 'it' ? "Chiudi Anteprima" : "Close Preview") : (lang === 'it' ? "Anteprima" : "Preview")}</span>
+                  <Code size={24} className="sm:size-[13px]" />
+                  <span className="hidden sm:inline">{lang === 'it' ? `Sintassi: ${syntaxHighlightOn ? 'ON' : 'OFF'}` : `Syntax: ${syntaxHighlightOn ? 'ON' : 'OFF'}`}</span>
                 </button>
               )}
+
+              <button
+                onClick={() => setShowPreview(!showPreview)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg font-bold transition-all shadow-xs active:scale-95 cursor-pointer text-sm sm:text-[10px] uppercase tracking-wide border ${
+                  showPreview 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-800/50 dark:text-emerald-400 hover:bg-emerald-100' 
+                    : 'bg-white dark:bg-[#0D0F12] text-gray-600 dark:text-zinc-400 border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800 hover:text-gray-900 dark:hover:text-zinc-200'
+                }`}
+                title={lang === 'it' ? "Affianca anteprima ad albero" : "Side-by-side preview"}
+                id="toggle-preview-btn"
+              >
+                {showPreview ? <Edit3 size={24} className="sm:size-[13px]" /> : <Eye size={24} className="sm:size-[13px]" />}
+                <span className="hidden sm:inline">{showPreview ? (lang === 'it' ? "Chiudi Anteprima" : "Close Preview") : (lang === 'it' ? "Anteprima" : "Preview")}</span>
+              </button>
             </div>
           </>
         )}
       </div>
 
       <div className="flex-1 flex overflow-hidden min-h-0 min-w-0">
-        <div className={`flex-1 flex relative overflow-hidden bg-white dark:bg-[#0D0F12] transition-colors duration-200 min-w-0 min-h-0 ${
+        <div className={`flex-1 flex relative overflow-hidden bg-gray-50 dark:bg-[#16181D] transition-colors duration-200 min-w-0 min-h-0 ${
           showPreview ? (isPreviewFullScreen ? 'hidden' : 'hidden lg:flex border-r border-gray-200 dark:border-[#1E2127]') : ''
         }`}>
           <div className="flex-1 overflow-auto" style={{ fontSize: `${editorFontSize}px` }}>
@@ -429,13 +902,18 @@ export function VimEditor({
         {(showPreview) && (
           <div className="flex-1 bg-gray-50 dark:bg-[#0D0F12] p-4 sm:p-6 font-mono text-xs overflow-y-auto leading-6 select-text border-l border-gray-200 dark:border-[#1E2127] transition-colors duration-200"
                style={{ fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace' }}>
+            
             {!isPreviewFullScreen && (
               <div className="flex flex-wrap justify-between items-center border-b border-gray-200 dark:border-[#2D2D2D] pb-3 mb-4 gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-gray-700 dark:text-zinc-200 uppercase flex items-center gap-1.5 font-sans">
                     <Sparkles size={13} className="text-[#8AB4F8]" /> {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
                   </span>
+                  <span className="text-[10px] font-sans px-1.5 py-0.5 rounded bg-gray-200/60 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400">
+                    {lang === 'it' ? "Solo Lettura" : "Read Only"}
+                  </span>
                 </div>
+
                 {/* Preview Zoom & Fullscreen Controls */}
                 <div className="flex items-center gap-1.5 font-sans">
                   <div className="flex items-center gap-0.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg p-0.5 shadow-xs">
@@ -457,6 +935,7 @@ export function VimEditor({
                       <ZoomIn size={13} />
                     </button>
                   </div>
+                  
                   <button
                     type="button"
                     onClick={() => setIsPreviewFullScreen(true)}
@@ -465,6 +944,7 @@ export function VimEditor({
                   >
                     <Maximize2 size={13} />
                   </button>
+
                   <button
                     type="button"
                     onClick={() => setShowPreview(false)}
@@ -476,6 +956,7 @@ export function VimEditor({
                 </div>
               </div>
             )}
+
             <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
               {renderRichPreviewContent(content, format, theme)}
             </div>
@@ -514,8 +995,8 @@ export function VimEditor({
           }}
         />
       </div>
-
-                {/* Mode Selection Popover Menu */}
+      
+          {/* Mode Selection Popover Menu */}
           {showModeMenu && (
             <>
               <div className="fixed inset-0 z-40 bg-black/10 dark:bg-black/40" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowModeMenu(false); }} />
@@ -553,6 +1034,7 @@ export function VimEditor({
               </div>
             </>
           )}
+
       <footer className="relative bg-emerald-600 dark:bg-[#21252B] h-6 flex text-[10px] items-center text-white dark:text-[#9DA5B4] font-sans font-medium tracking-wide uppercase shrink-0 w-full overflow-x-auto overflow-y-hidden transition-colors duration-200">
         <div className="relative flex items-center h-full px-2">
           {/* Direct Tap Mode Selector Button */}
@@ -590,19 +1072,61 @@ export function VimEditor({
               </span>
             </button>
           )}
-
-
         </div>
 
         <div className="px-2 text-white dark:text-[#0D0F12] font-semibold tracking-tight truncate hidden sm:block min-w-0">
           {filename}
         </div>
-        <div className="flex-1 text-white/80 dark:text-zinc-800 italic text-[11px] lowercase normal-case px-2.5 truncate min-w-0">
+        
+        <div className="flex-1 text-white/80 dark:text-zinc-300 italic text-[11px] lowercase normal-case px-2.5 truncate min-w-0">
           {statusMessage}
         </div>
+        
         <div className="px-2 font-mono tabular-nums">Ln {cursorPos.line}, Col {cursorPos.col}</div>
         <div className="px-2 hidden sm:block font-mono">UTF-8</div>
         <div className="px-2 font-mono">{format}</div>
+
+      {/* Hidden File Inputs for Image Upload */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRefTemp} 
+        className="hidden" 
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const url = URL.createObjectURL(file);
+            insertAtCursor(`![${file.name}](${url})`);
+          }
+          if (fileInputRefTemp.current) fileInputRefTemp.current.value = '';
+          setShowImageMenu(false);
+        }}
+       />
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRefBase64} 
+        className="hidden" 
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const base64 = reader.result as string;
+              const refName = `img-${Date.now()}`;
+              insertAtCursor(`![${file.name}][${refName}]`);
+              appendToBottom(`
+
+[${refName}]: ${base64}`);
+            };
+            reader.readAsDataURL(file);
+          }
+          if (fileInputRefBase64.current) fileInputRefBase64.current.value = '';
+          setShowImageMenu(false);
+        }}
+       />
       </footer>
     </div>
   );

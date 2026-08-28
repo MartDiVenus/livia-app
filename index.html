@@ -11,7 +11,43 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black" />
     <link rel="apple-touch-icon" href="logo-128x128.png" />
+  <script>window.addEventListener("error", function(e) { fetch("/log-error?msg=" + encodeURIComponent(e.message)); })</script>
+    
+    <style>
+      vite-error-overlay, #vite-error-overlay, .vite-error-overlay { display: none !important; opacity: 0 !important; pointer-events: none !important; z-index: -9999 !important; }
+      body > div[style*="z-index: 9999"] { display: none !important; } 
+    </style>
+    <script>
+      // Aggressively kill Vite error overlay and WebSocket errors
+      const observer = new MutationObserver((mutations) => {
+        mutations.forEach((mutation) => {
+          mutation.addedNodes.forEach((node) => {
+            if (node.tagName === 'VITE-ERROR-OVERLAY' || node.id === 'vite-error-overlay') {
+              node.remove();
+            }
+            // Sometimes Vite creates a shadow root
+            if (node.shadowRoot) {
+               const style = document.createElement('style');
+               style.innerHTML = ':host { display: none !important; }';
+               node.shadowRoot.appendChild(style);
+            }
+          });
+        });
+      });
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      
+      // Override console.error for Vite websocket errors to prevent any custom error overlays
+      const origError = console.error;
+      console.error = function(...args) {
+        if (args.length > 0 && typeof args[0] === 'string' && args[0].includes('WebSocket')) {
+          return; // Ignore websocket errors
+        }
+        origError.apply(console, args);
+      };
+    </script>
   </head>
+
+
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

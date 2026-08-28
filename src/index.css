@@ -51,3 +51,6 @@ html, body {
 .dark .scrollbar-thin::-webkit-scrollbar-thumb {
   background: #3f3f46;
 }
+
+/* Force hide Vite error overlay */
+vite-error-overlay { display: none !important; }

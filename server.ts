@@ -1,7 +1,6 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 
 async function startServer() {
@@ -22,13 +21,17 @@ async function startServer() {
 
   // API Route for Gemini AI operations (translation, content prompting, latin generation)
   app.post("/api/gemini/generate", async (req, res) => {
-    const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey } = req.body;
+    const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey, systemInstruction } = req.body;
 
-    async function generateWithModelFallback(contents: string): Promise<any> {
+    async function generateWithModelFallback(contents: string, sysInst?: string): Promise<any> {
       // Valid up-to-date models for @google/genai SDK
-      let modelsToTry: string[] = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite"];
-      if (modelTier === 'pro' || modelTier === 'gemini-3.1-pro-preview') {
+      let modelsToTry: string[] = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-flash-latest"];
+      if (modelTier === 'flash-lite') {
+        modelsToTry = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.6-flash"];
+      } else if (modelTier === 'pro') {
         modelsToTry = ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-2.5-flash"];
+      } else if (modelTier === 'pro-thinking') {
+        modelsToTry = ["gemini-3.1-pro-thinking-preview", "gemini-3.6-pro", "gemini-3.1-pro-preview"];
       } else if (modelTier && modelTier.startsWith('gemini-')) {
         modelsToTry = [modelTier, "gemini-3.6-flash", "gemini-2.5-flash"];
       }
@@ -51,7 +54,8 @@ async function startServer() {
       for (const { client, isCustom } of clientsToTry) {
         for (const m of modelsToTry) {
           try {
-            const res = await client.models.generateContent({ model: m, contents });
+            const config = sysInst ? { systemInstruction: sysInst } : undefined;
+            const res = await client.models.generateContent({ model: m, contents, config });
             return res;
           } catch (err: any) {
             lastError = err;
@@ -64,7 +68,7 @@ async function startServer() {
 
     try {
       if (action === "translate") {
-        const response = await generateWithModelFallback(`Translate the following text into ${targetLanguage || "Italian"}. Return ONLY the translated text. Maintain the original formatting, line breaks, and style as much as possible. Do not add any conversational intro/outro or explanations.\n\nText to translate:\n${text}`);
+        const response = await generateWithModelFallback(`Translate the following text into ${targetLanguage || "Italian"}. Return ONLY the translated text. Maintain the original formatting, line breaks, and style as much as possible. Do not add any conversational intro/outro or explanations.\n\nText to translate:\n${text}`, systemInstruction);
         return res.json({ result: response.text });
       }
 
@@ -76,7 +80,7 @@ If the instruction is a question or request for information, output the answer c
 Do not add meta-commentary unless requested.
 
 Original text:
-${text}`);
+${text}`, systemInstruction);
         return res.json({ result: response.text });
       }
 
@@ -88,7 +92,7 @@ Line 1: The Latin phrase (e.g., "Audentes fortuna iuvat")
 Line 2: The Italian translation (e.g., "La fortuna aiuta gli audaci")
 Line 3: Elegant, short context, historical origin, or philosophical commentary (max 2 sentences).
 
-Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`);
+Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`, systemInstruction);
         return res.json({ result: response.text });
       }
 
@@ -206,6 +210,7 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
 
   // Serve static UI and assets
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -220,6 +225,7 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
     });
   }
 
+  app.get('/log-error', (req, res) => { console.log('BROWSER ERROR:', req.query.msg); res.send('ok'); });
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server LiViA running on http://0.0.0.0:${PORT}`);
   });

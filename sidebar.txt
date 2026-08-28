@@ -1,0 +1,142 @@
+                                    <Cloud size={14} className={`${isCurrent ? 'text-blue-500' : 'text-gray-400'} shrink-0`} />
+                                  )}
+                                  <span className="truncate">{file.name}</span>
+                                </span>
+                                <span className="text-[9px] text-gray-400 font-sans shrink-0">
+                                  {isFolder ? (lang === 'it' ? 'Cartella' : 'Folder') : new Date(file.modifiedTime).toLocaleDateString()}
+                                </span>
+                              </div>
+                            );
+                          })
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {sidebarTab === 'guide' && (
+              <div className="flex flex-col gap-2 flex-1 overflow-y-auto font-sans">
+                
+                {/* 1. Presentazione Ufficiale LiViA */}
+                <details className="group bg-white dark:bg-[#16181D] border border-emerald-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden" open>
+                  <summary className="flex items-center gap-2 p-3 font-bold text-xs text-emerald-800 dark:text-emerald-400 cursor-pointer select-none bg-emerald-50/50 dark:bg-emerald-900/10 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors">
+                    <Sparkles size={14} className="text-emerald-500" />
+                    <span>{lang === 'it' ? 'Presentazione Ufficiale LiViA' : 'Official LiViA Presentation'}</span>
+                  </summary>
+                  <div className="p-3 space-y-2.5 text-[10.5px] border-t border-emerald-100 dark:border-[#2D2D2D]">
+                    <p className="text-gray-800 dark:text-zinc-200 font-medium leading-relaxed bg-gray-50 dark:bg-[#0D0F12] p-2.5 rounded-lg border border-gray-200/60 dark:border-[#2D2D2D]">
+                      {lang === 'it'
+                        ? "LiViA (Light Vi Again) è un editor di testo e codice iper-leggero e modale in stile Vim. Unisce perfettamente l'editing offline con l'integrazione Google Workspace™."
+                        : "LiViA (Light Vi Again) is a hyper-lightweight, modal Vim-style editor. It seamlessly bridges offline editing with Google Workspace™ integration."}
+                    </p>
+                    <ul className="space-y-1.5 text-gray-700 dark:text-zinc-300 leading-snug list-disc pl-4">
+                      <li><strong>Vim Engine:</strong> {lang === 'it' ? 'Modalità Normal, Insert e Visual native.' : 'Native Normal, Insert, and Visual modes.'}</li>
+                      <li><strong>Offline-First:</strong> {lang === 'it' ? 'Nessun database richiesto. File salvati nel browser.' : 'No database required. Files saved in browser.'}</li>
+                      <li><strong>Workspace SDK:</strong> {lang === 'it' ? 'Apertura diretta da Drive™ e Docs™.' : 'Direct open from Drive™ and Docs™.'}</li>
+                    </ul>
+                  </div>
+                </details>
+
+                {/* 2. Scorciatoie Vim */}
+                <details className="group bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden">
+                  <summary className="flex items-center gap-2 p-3 font-bold text-xs text-gray-800 dark:text-gray-200 cursor-pointer select-none bg-gray-50/50 dark:bg-[#16181D]/50 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors">
+                    <Terminal size={14} className="text-gray-500" />
+                    <span>{lang === 'it' ? 'Comandi Vim Principali' : 'Main Vim Commands'}</span>
+                  </summary>
+                  <div className="p-3 space-y-2.5 text-[10.5px] border-t border-gray-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
+                    <ul className="space-y-1 list-disc pl-4">
+                      <li><code>i</code> {lang === 'it' ? 'Modalità Inserimento' : 'Insert Mode'}</li>
+                      <li><code>Esc</code> {lang === 'it' ? 'Modalità Comando (Normale)' : 'Command Mode (Normal)'}</li>
+                      <li><code>v</code> {lang === 'it' ? 'Modalità Visuale' : 'Visual Mode'}</li>
+                      <li><code>:w</code> {lang === 'it' ? 'Salva (Virtuale)' : 'Save (Virtual)'}</li>
+                      <li><code>:q</code> {lang === 'it' ? 'Chiudi file corrente' : 'Close current file'}</li>
+                      <li><code>:he</code> {lang === 'it' ? 'Apri Manuale Completo' : 'Open Full Manual'}</li>
+                    </ul>
+                  </div>
+                </details>
+                
+                {/* 3. Gemini Gems & API */}
+                <details className="group bg-white dark:bg-[#16181D] border border-blue-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden">
+                  <summary className="flex items-center gap-2 p-3 font-bold text-xs text-blue-800 dark:text-blue-400 cursor-pointer select-none bg-blue-50/50 dark:bg-blue-900/10 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors">
+                    <Sparkles size={14} className="text-blue-500" />
+                    <span>{lang === 'it' ? 'Gemini AI & Profili' : 'Gemini AI & Profiles'}</span>
+                  </summary>
+                  <div className="p-3 space-y-2 text-[10.5px] border-t border-blue-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
+                    <p>
+                      <strong>{lang === 'it' ? 'Gemini Gems (Profili AI):' : 'Gemini Gems (AI Profiles):'}</strong><br />
+                      {lang === 'it'
+                        ? 'Configura istruzioni di sistema (System Prompts) dalle Impostazioni per alterare il comportamento dell\'IA. Quando attivi un profilo dalla tendina in alto, questo funge da direttiva prioritaria.'
+                        : 'Configure system instructions from Settings to alter AI behavior. When a profile is active from the top dropdown, it acts as the primary directive.'}
+                    </p>
+                    <p className="mt-2">
+                      <strong>{lang === 'it' ? 'Comandi AI Rapidi:' : 'Quick AI Commands:'}</strong>
+                    </p>
+                    <ul className="space-y-1 list-disc pl-4">
+                      <li><code>:ai &lt;prompt&gt;</code> {lang === 'it' ? 'Applica istruzione al testo' : 'Apply instruction to text'}</li>
+                      <li><code>:tr &lt;lang&gt;</code> {lang === 'it' ? 'Traduci (es. :tr it)' : 'Translate (e.g. :tr it)'}</li>
+                      <li><code>:lat &lt;tema&gt;</code> {lang === 'it' ? 'Testo segnaposto (es. standard)' : 'Placeholder (e.g. standard)'}</li>
+                    </ul>
+                    <p className="mt-2">
+                      <strong>{lang === 'it' ? 'Chiavi API & Volumi:' : 'API Keys & Workloads:'}</strong><br />
+                      {lang === 'it' 
+                        ? 'Usa la tua API Key gratuita (Google AI Studio) nelle Impostazioni. Gli abbonamenti consumer (es. Google One AI Premium) NON includono API per sviluppatori.' 
+                        : 'Use your free API Key (Google AI Studio) in Settings. Consumer subscriptions (e.g. Google One AI Premium) DO NOT include developer APIs.'}
+                    </p>
+                  </div>
+                </details>
+
+                {/* 4. Formattazione Avanzata */}
+                <details className="group bg-white dark:bg-[#16181D] border border-purple-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden">
+                  <summary className="flex items-center gap-2 p-3 font-bold text-xs text-purple-800 dark:text-purple-400 cursor-pointer select-none bg-purple-50/50 dark:bg-purple-900/10 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors">
+                    <BookOpen size={14} className="text-purple-500" />
+                    <span>{lang === 'it' ? 'Guide Formattazione & Immagini' : 'Formatting & Images Guides'}</span>
+                  </summary>
+                  <div className="p-3 space-y-2.5 border-t border-purple-100 dark:border-[#2D2D2D]">
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        onClick={() => {
+                          let f = virtualFiles.find(x => x.name === 'help_colors.md');
+                          if (!f) f = HELP_COLORS_TEMPLATE;
+                          setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_colors.md'), f!]);
+                          setFileHistory(prev => [...prev, filename]);
+                          setContent(f.content);
+                          setFilename('help_colors.md');
+                          setFormat('md');
+                        }}
+                        className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                      >
+                        🎨 {lang === 'it' ? 'Colori' : 'Colors'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          let f = virtualFiles.find(x => x.name === 'help_figures.md');
+                          if (!f) f = HELP_FIGURES_TEMPLATE;
+                          setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_figures.md'), f!]);
+                          setFileHistory(prev => [...prev, filename]);
+                          setContent(f.content);
+                          setFilename('help_figures.md');
+                          setFormat('md');
+                        }}
+                        className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                      >
+                        🖼️ {lang === 'it' ? 'Immagini' : 'Images'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          let f = virtualFiles.find(x => x.name === 'help_tables.md');
+                          if (!f) f = HELP_TABLES_TEMPLATE;
+                          setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_tables.md'), f!]);
+                          setFileHistory(prev => [...prev, filename]);
+                          setContent(f.content);
+                          setFilename('help_tables.md');
+                          setFormat('md');
+                        }}
+                        className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                      >
+                        📊 {lang === 'it' ? 'Tabelle' : 'Tables'}
+                      </button>
+                      <button
+                        onClick={() => {
+                          let f = virtualFiles.find(x => x.name === 'help_ai.md');
+                          if (!f) f = getHelpAiTemplate(lang);

@@ -13,10 +13,11 @@ import { SupportModal } from './components/SupportModal';
 import { TermsModal } from './components/TermsModal';
 import { InfoModal } from './components/InfoModal';
 import { SettingsModal } from './components/SettingsModal';
+import { AiProfilesModal } from './components/AiProfilesModal';
 import { AuxiliaryKeyboard } from './components/AuxiliaryKeyboard';
 import { exportToPDF } from './utils/pdfExport';
 import { convertToLaTeX } from './utils/latexExport';
-import { VimMode, FileFormat, TEMPLATES, getTemplates, getLvarcTemplate, getHelpTemplate, getHelpColorsTemplate, getHelpFiguresTemplate, getHelpTablesTemplate, HELP_TEMPLATE, HELP_COLORS_TEMPLATE, HELP_FIGURES_TEMPLATE, HELP_TABLES_TEMPLATE, HELP_FIGURES_TABLES_TEMPLATE, FileData, sanitizeText } from './types';
+import { VimMode, FileFormat, TEMPLATES, getTemplates, getLvarcTemplate, getHelpTemplate, getHelpColorsTemplate, getHelpFiguresTemplate, getHelpTablesTemplate, getHelpAiTemplate, HELP_TEMPLATE, HELP_COLORS_TEMPLATE, HELP_FIGURES_TEMPLATE, HELP_TABLES_TEMPLATE, HELP_AI_TEMPLATE, HELP_FIGURES_TABLES_TEMPLATE, FileData, sanitizeText, AiProfile } from './types';
 import { parseOutline, OutlineElement } from './utils/outlineParser';
 import { parseKeyFromVimCommand } from './utils/vimEngine';
 import JSZip from 'jszip';
@@ -53,7 +54,7 @@ import {
   RefreshCw,
   ExternalLink,
   Wrench
-} from 'lucide-react';
+, ChevronUp } from 'lucide-react';
 import {
   initAuth,
   googleSignIn,
@@ -73,6 +74,7 @@ interface LvaConfig {
   syntaxHighlight: boolean;
   lang?: 'it' | 'en';
   apiKey?: string;
+  model?: 'flash' | 'pro';
 }
 
 export function checkIsMobile(): boolean {
@@ -141,6 +143,17 @@ function parseLvarc(content: string, isMobileOverride?: boolean): LvaConfig {
       config.lang = 'en';
     }
 
+    
+    if (trimmed === 'gem model flash-lite' || trimmed === 'set model=flash-lite' || trimmed === 'gem model=flash-lite') {
+      config.model = 'flash-lite';
+    } else if (trimmed === 'gem model flash' || trimmed === 'set model=flash' || trimmed === 'gem model=flash') {
+      config.model = 'flash';
+    } else if (trimmed === 'gem model pro-thinking' || trimmed === 'set model=pro-thinking' || trimmed === 'gem model=pro-thinking') {
+      config.model = 'pro-thinking';
+    } else if (trimmed === 'gem model pro' || trimmed === 'set model=pro' || trimmed === 'gem model=pro') {
+      config.model = 'pro';
+    }
+
     const keyMatch = parseKeyFromVimCommand(trimmed);
     if (keyMatch.isKeyCmd) {
       if (keyMatch.action === 'set' && keyMatch.value) {
@@ -164,6 +177,7 @@ export default function App() {
   const [syntaxHighlightOn, setSyntaxHighlightOn] = useState<boolean>(true);
 
   // Virtual File System State
+  const [fileHistory, setFileHistory] = useState<string[]>([]);
   const [virtualFiles, setVirtualFiles] = useState<FileData[]>(() => {
     const initialLang: 'it' | 'en' = (() => {
       if (typeof window !== 'undefined') {
@@ -178,7 +192,58 @@ export default function App() {
     return initial;
   });
 
-  // Application State
+
+
+  const [isAiProfilesModalOpen, setIsAiProfilesModalOpen] = useState(false);
+  const [aiProfiles, setAiProfiles] = useState<AiProfile[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('livia_ai_profiles');
+      if (saved) {
+        try { return JSON.parse(saved); } catch (e) {}
+      }
+    }
+    return [];
+  });
+  const [activeAiProfileId, setActiveAiProfileId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('livia_ai_profiles', JSON.stringify(aiProfiles));
+    }
+  }, [aiProfiles]);
+
+  const handleAiCommand = async (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string) => void) => {
+    try {
+      const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
+      let systemInstruction: string | undefined = undefined;
+      
+      if (activeAiProfileId) {
+        const profile = aiProfiles.find(p => p.id === activeAiProfileId);
+        if (profile) systemInstruction = profile.instruction;
+      }
+      
+      const payload: any = { action, text: textToProcess, userApiKey, systemInstruction };
+      if (action === 'translate') payload.targetLanguage = arg;
+      if (action === 'prompt') { payload.prompt = arg; payload.modelTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'gemini-3.6-flash' : 'gemini-3.6-flash'; }
+      if (action === 'latin') payload.theme = arg;
+      
+      showToast(lang === 'it' ? 'Elaborazione IA in corso...' : 'AI processing...', 'info');
+      const res = await fetch("/api/gemini/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || "Errore API Gemini");
+      }
+      const data = await res.json();
+      onInsert(data.result);
+      showToast(lang === 'it' ? 'Fatto!' : 'Done!', 'success');
+    } catch (e: any) {
+      showToast(e.message || 'Errore AI', 'error');
+    }
+  };
   const [content, setContent] = useState<string>(() => {
     const initialLang: 'it' | 'en' = (() => {
       if (typeof window !== 'undefined') {
@@ -229,6 +294,8 @@ export default function App() {
       if (f.name === 'help_colors.md') return colorsFile;
       if (f.name === 'help_figures.md') return figuresFile;
       if (f.name === 'help_tables.md') return tablesFile;
+      if (f.name === 'help_ai.md') return getHelpAiTemplate(newLang);
+      if (f.name === 'help_ai.md') return getHelpAiTemplate(newLang);
       if (f.name === '.lvarc') return lvarcFile;
       if (f.name === 'example.txt') {
         const oldTxtIt = getTemplates('it')['txt'].content;
@@ -244,6 +311,8 @@ export default function App() {
     if (filename === 'help_colors.md') setContent(colorsFile.content);
     if (filename === 'help_figures.md') setContent(figuresFile.content);
     if (filename === 'help_tables.md') setContent(tablesFile.content);
+    if (filename === 'help_ai.md') setContent(getHelpAiTemplate(newLang).content);
+    if (filename === 'help_ai.md') setContent(getHelpAiTemplate(newLang).content);
     if (filename === '.lvarc') setContent(lvarcFile.content);
     if (filename === 'example.txt') {
       const oldTxtIt = getTemplates('it')['txt'].content;
@@ -279,6 +348,7 @@ export default function App() {
   const [showAuxiliaryKeyboard, setShowAuxiliaryKeyboard] = useState<boolean>(false);
   const [isSidebarWide, setIsSidebarWide] = useState<boolean>(false);
   const [sidebarTab, setSidebarTab] = useState<'files' | 'outline' | 'drive' | 'guide'>('files');
+  const [openGuideSection, setOpenGuideSection] = useState<string>("presentation");
   const [copiedOpenUrl, setCopiedOpenUrl] = useState<boolean>(false);
   
   // Dimensions state for panels
@@ -493,6 +563,9 @@ export default function App() {
     }
     if (config.apiKey) {
       localStorage.setItem('livia_custom_gemini_key', config.apiKey);
+    }
+    if (config.model) {
+      localStorage.setItem('livia_gemini_model', config.model);
     }
   };
 
@@ -1123,9 +1196,32 @@ export default function App() {
       {/* Main Workspace Frame */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-1 sm:p-4 flex flex-col lg:flex-row gap-2 sm:gap-4 overflow-hidden min-h-0 min-w-0">
         
+        
         {/* Vim Editor Canvas Container */}
         <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] rounded-2xl border border-gray-200 dark:border-[#2D2D2D] shadow-sm overflow-hidden transition-all min-h-0 min-w-0">
+          
+          {/* AI Profile Selector Header */}
+          {aiProfiles.length > 0 && (
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 dark:border-[#2D2D2D] bg-purple-50/50 dark:bg-purple-900/10">
+              <span className="text-[10px] font-bold text-purple-700 dark:text-purple-400 uppercase flex items-center gap-1.5">
+                <Sparkles size={12} />
+                {lang === 'it' ? 'Profilo AI Attivo:' : 'Active AI Profile:'}
+              </span>
+              <select
+                value={activeAiProfileId || ''}
+                onChange={(e) => setActiveAiProfileId(e.target.value || null)}
+                className="bg-transparent text-xs text-gray-700 dark:text-zinc-300 outline-none border-none cursor-pointer font-medium appearance-none min-w-[120px] text-right"
+              >
+                <option value="">{lang === 'it' ? '-- Nessuno --' : '-- None --'}</option>
+                {aiProfiles.map(p => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           <VimEditor
+
             content={content}
             setContent={(val) => {
               setContent(val);
@@ -1146,6 +1242,7 @@ export default function App() {
             editorFontSize={editorFontSize}
             setEditorFontSize={setEditorFontSize}
             syntaxHighlightOn={syntaxHighlightOn}
+            setSyntaxHighlightOn={setSyntaxHighlightOn}
             onSaveFileState={(rawName, fileContent) => {
               const cleanName = rawName.replace(/^["']|["']$/g, '').trim();
               const name = cleanName.split(/[\/\\]/).pop() || cleanName;
@@ -1176,11 +1273,39 @@ export default function App() {
               const file = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
               return file ? file.content : null;
             }}
+            onCloseFileState={(force: boolean) => {
+              const currentSaved = virtualFiles.find(f => f.name.toLowerCase() === filename.toLowerCase());
+              const isModified = currentSaved ? currentSaved.content !== content : content.length > 0;
+              
+              if (!force && isModified) {
+                return { success: false, message: lang === 'it' ? "Errore: Nessun salvataggio dall'ultima modifica (aggiungi ! per scartare)" : "Error: No write since last change (add ! to override)" };
+              }
+              
+              if (fileHistory.length > 0) {
+                const prevFile = fileHistory[fileHistory.length - 1];
+                setFileHistory(prev => prev.slice(0, -1));
+                
+                const existing = virtualFiles.find(f => f.name.toLowerCase() === prevFile.toLowerCase());
+                if (existing) {
+                  setFilename(existing.name);
+                  setContent(existing.content);
+                  const ext = existing.name.split('.').pop()?.toLowerCase();
+                  setFormat(ext === 'md' ? 'md' : ext === 'json' ? 'json' : ext === 'html' ? 'html' : 'txt');
+                  return { success: true, message: lang === 'it' ? `Tornato a "${existing.name}"` : `Returned to "${existing.name}"` };
+                }
+              }
+              
+              // empty history
+              setFilename('');
+              setContent('');
+              setFormat('txt');
+              return { success: true, message: lang === 'it' ? 'Editor svuotato' : 'Editor cleared', isEmptyHistory: true };
+            }}
             onOpenFileState={(rawTargetName) => {
               if (!rawTargetName) return { found: false, name: '' };
               const cleanTarget = rawTargetName.replace(/^["']|["']$/g, '').trim();
               const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
-              
+              setFileHistory(prev => [...prev, filename]);
               // Build updated list synchronously to avoid state race conditions
               const updatedVirtual = virtualFiles.map(f => 
                 f.name.toLowerCase() === filename.toLowerCase() ? { ...f, content } : f
@@ -1251,31 +1376,47 @@ export default function App() {
               // 1. Color guide: :he color md, :he colour md, :he colors md
               if (normTopic.includes('color') || normTopic.includes('colour') || normTopic.includes('colore') || normTopic.includes('colori')) {
                 const colFile = getHelpColorsTemplate(lang);
+                setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_colors.md'), colFile]);
-                setContent(colFile.content);
-                setFilename('help_colors.md');
+                
+                        setContent(colFile.content);
+                        setFilename('help_colors.md');
                 setFormat('md');
                 showToast(lang === 'it' ? 'Aperta guida "Formattazione Colori" (:he color md)!' : 'Opened "Color Formatting" guide (:he color md)!', 'info');
               } 
               // 2. Figure / Image guide: :he figure md, :he figures md
               else if (normTopic.includes('figure') || normTopic.includes('figura') || normTopic.includes('fig') || normTopic.includes('image') || normTopic.includes('immagine') || normTopic.includes('didascalia') || normTopic.includes('caption')) {
                 const figFile = getHelpFiguresTemplate(lang);
+                setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_figures.md'), figFile]);
-                setContent(figFile.content);
-                setFilename('help_figures.md');
+                
+                        setContent(figFile.content);
+                        setFilename('help_figures.md');
                 setFormat('md');
                 showToast(lang === 'it' ? 'Aperta guida "Immagini & Figure con Didascalia" (:he figure md)!' : 'Opened "Images & Figures with Captions" guide (:he figure md)!', 'info');
               } 
               // 3. Table guide: :he table md, :he tables md
-              else if (normTopic.includes('table') || normTopic.includes('tabella') || normTopic.includes('tabelle')) {
+              else if (normTopic.includes('table') || normTopic.includes('tabella') || normTopic.includes('tabelle') || normTopic.includes('tab')) {
                 const tabFile = getHelpTablesTemplate(lang);
+                setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_tables.md'), tabFile]);
-                setContent(tabFile.content);
-                setFilename('help_tables.md');
+                
+                        setContent(tabFile.content);
+                        setFilename('help_tables.md');
                 setFormat('md');
                 showToast(lang === 'it' ? 'Aperta guida "Costruzione Tabelle" (:he table md)!' : 'Opened "Table Construction" guide (:he table md)!', 'info');
               } 
-              // 4. Gemini AI & API Key section
+              // 4. AI guide: :he ai, :he gem
+              else if (normTopic.includes('ai') || normTopic.includes('gem') || normTopic.includes('lat') || normTopic.includes('tr')) {
+                const aiFile = getHelpAiTemplate(lang);
+                setFileHistory(prev => [...prev, filename]);
+                setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_ai.md'), aiFile]);
+                setContent(aiFile.content);
+                setFilename('help_ai.md');
+                setFormat('md');
+                showToast(lang === 'it' ? 'Aperta guida "Gemini AI" (:he ai)!' : 'Opened "Gemini AI" guide (:he ai)!', 'info');
+              }
+              // 5. Gemini API Key section
               else if (normTopic.includes('gem') || normTopic.includes('key') || normTopic.includes('api') || normTopic.includes('model') || normTopic.includes('studio') || normTopic.includes('abbonament') || normTopic.includes('subscription')) {
                 scrollToSection('guide-gemini-section');
                 showToast(lang === 'it' ? 'Aperta guida "🔑 Chiave API Personale & Distinzione Abbonamenti"!' : 'Opened "🔑 Personal API Key & Subscriptions Distinction" guide!', 'info');
@@ -1283,7 +1424,7 @@ export default function App() {
                   setIsSettingsModalOpen(true);
                 }
               }
-              // 5. Vim Navigation & Commands
+              // 6. Vim Navigation & Commands
               else if (normTopic.includes('vim') || normTopic.includes('nav') || normTopic.includes('motion') || normTopic.includes('move')) {
                 scrollToSection('guide-vim-section');
                 showToast(lang === 'it' ? 'Aperta sezione "Navigazione & Comandi Vim"!' : 'Opened "Vim Commands & Navigation" section!', 'info');
@@ -1326,6 +1467,7 @@ export default function App() {
             onModeChange={setActiveMode}
             isSoftKeyboardOpen={isSoftKeyboardOpen}
             onSoftKeyboardChange={setIsSoftKeyboardOpen}
+            onAiCommand={handleAiCommand}
           />
         </div>
 
@@ -1481,6 +1623,7 @@ export default function App() {
                     onClick={() => {
                       const lvarcFile = virtualFiles.find(f => f.name === '.lvarc');
                       if (lvarcFile) {
+                        setFileHistory(prev => [...prev, filename]);
                         setVirtualFiles(prev => prev.map(f => f.name === filename ? { ...f, content } : f));
                         setContent(lvarcFile.content);
                         setFilename(lvarcFile.name);
@@ -1530,6 +1673,7 @@ export default function App() {
                       format: resolvedFormat,
                       content: `\n`
                     };
+                    setFileHistory(prev => [...prev, filename]);
                     setVirtualFiles(prev => [...prev, newFile]);
                     setContent(newFile.content);
                     setFilename(newFile.name);
@@ -1588,6 +1732,7 @@ export default function App() {
                         <div
                           key={file.name}
                           onClick={() => {
+                            setFileHistory(prev => [...prev, filename]);
                             setVirtualFiles(prev => prev.map(f => f.name === filename ? { ...f, content } : f));
                             setContent(file.content);
                             setFilename(file.name);
@@ -1934,508 +2079,212 @@ export default function App() {
             )}
 
             {sidebarTab === 'guide' && (
-              <div className="flex flex-col gap-3.5 flex-1 overflow-y-auto font-sans">
+              <div className="flex flex-col gap-2 flex-1 overflow-y-auto font-sans pr-1">
+                
                 {/* 1. Presentazione Ufficiale LiViA */}
-                <div id="guide-about-section" className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3.5 space-y-2.5">
-                  <h3 className="text-xs font-bold text-emerald-800 dark:text-emerald-400 flex items-center gap-1.5">
-                    <Sparkles size={14} className="text-emerald-500" />
-                    <span>{lang === 'it' ? 'Presentazione Ufficiale LiViA' : 'Official LiViA Presentation'}</span>
-                  </h3>
-                  
-                  <p className="text-[11px] text-gray-800 dark:text-zinc-200 font-medium leading-relaxed bg-white dark:bg-[#0D0F12] p-3 rounded-lg border border-emerald-200/60 dark:border-[#2D2D2D]">
-                    {lang === 'it'
-                      ? "LiViA (Light Vi Again) è un editor di testo e codice iper-leggero e modale in stile Vim. Progettato per sviluppatori, ingegneri e utenti avanzati che richiedono un'efficienza di livello terminale unita a funzionalità cloud moderne, LiViA unisce perfettamente l'editing di testo offline leggero con l'integrazione con Google Workspace™."
-                      : "LiViA (Light Vi Again) is a hyper-lightweight, modal Vim-style text and code editor. Designed for developers, engineers, and power users who demand terminal-grade efficiency paired with modern cloud features, LiViA seamlessly bridges lightweight offline text editing with Google Workspace™ integration."}
-                  </p>
-
-                  <div className="p-2.5 bg-white dark:bg-[#0D0F12] rounded-lg border border-emerald-200/60 dark:border-[#2D2D2D] space-y-2 text-[10.5px]">
-                    <strong className="text-emerald-700 dark:text-emerald-400 font-bold block text-xs">
-                      🔑 {lang === 'it' ? 'Caratteristiche e Funzionalità Chiave:' : 'Key Features & Capabilities:'}
-                    </strong>
-                    <ul className="space-y-1.5 text-gray-700 dark:text-zinc-300 leading-snug">
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Core di Editing Modale:' : 'Modal Editing Core:'}</strong>{' '}
-                        {lang === 'it' ? 'Esperienza Vim autentica con modalità Normale, Inserimento, Comando e Visuale. Supporta movimenti base (g, G, 2g), eliminazioni (dd, dw, [n]dw), ricerca (/, n, N), undo/redo (u, .) e sostituzione globale (:%s/old/new/g).' : 'Authentic Vim experience featuring Normal, Insert, Command, and Visual modes. Supports core Vim motions (g, G, 2g), deletions (dd, dw, [n]dw), search navigation (/, n, N), undo/redo (u, .), and global string replacement (:%s/old/new/g).'}
-                      </li>
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Integrazione Google Workspace™:' : 'Google Workspace™ Integration:'}</strong>{' '}
-                        {lang === 'it' ? 'Sincronizzazione diretta bidirezionale con Google Drive™ e Google Docs™. Apri, modifica e salva frammenti di codice, note o documentazione nel tuo cloud storage.' : 'Direct two-way synchronization with Google Drive™ and Google Docs™. Open, edit, and push code snippets, notes, or documentation back to your cloud storage.'}
-                      </li>
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Assistente IA Google Gemini™:' : 'Google Gemini AI Assistant™:'}</strong>{' '}
-                        {lang === 'it' ? 'Alimentato dall\'integrazione nativa di Gemini AI™ per il refactoring del codice, la riassunzione di testi, il completamento e la generazione inline.' : 'Powered by native Gemini AI™ integration to assist with code refactoring, text summarization, auto-completion, and inline generation.'}
-                      </li>
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Supporto Multi-Formato & Sintassi:' : 'Multi-Format & Syntax Support:'}</strong>{' '}
-                        {lang === 'it' ? 'Evidenziazione della sintassi per testo semplice, Markdown (.md), LaTeX (.tex), XML, JSON, Python, Kotlin, JavaScript, C++ e script Bash.' : 'Comprehensive highlighting and parser support for plain text, Markdown (.md), LaTeX (.tex), XML, JSON, Python, Kotlin, JavaScript, C++, and Bash scripts.'}
-                      </li>
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Suite di Esportazione Documenti:' : 'Document Export Suite:'}</strong>{' '}
-                        {lang === 'it' ? 'Esporta il tuo lavoro in documenti PDF formattati, Markdown, TeX o documenti Word (.docx) con numerazione e rese sintattiche precise.' : 'Export your work instantly into cleanly formatted PDF documents, Markdown, TeX, or Word (.docx) formats with precise line-numbering and syntax rendering.'}
-                      </li>
-                      <li>
-                        <strong className="text-emerald-800 dark:text-emerald-300">• {lang === 'it' ? 'Appunti Cross-Platform & UX:' : 'Cross-Platform Clipboard & UX:'}</strong>{' '}
-                        {lang === 'it' ? 'Integrazione nativa con tastiera GBoard Android e appunti Linux (X11/Wayland). Interfaccia terminale con tipografia DejaVu Sans Mono per la distinzione visiva tra caratteri ambigui (l, I, 1).' : 'Native integration with Android GBoard and Linux (X11/Wayland) clipboards. Ultra-minimalist terminal interface using DejaVu Sans Mono for absolute distinction between ambiguous characters (l, I, 1).'}
-                      </li>
-                    </ul>
+                <div className="group bg-white dark:bg-[#16181D] border border-emerald-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden shrink-0">
+                  <div 
+                    onClick={() => setOpenGuideSection(openGuideSection === 'presentation' ? '' : 'presentation')}
+                    className="flex items-center justify-between p-3 font-bold text-xs text-emerald-800 dark:text-emerald-400 cursor-pointer select-none bg-emerald-50/50 dark:bg-emerald-900/10 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-emerald-500" />
+                      <span>{lang === 'it' ? 'Presentazione Ufficiale LiViA' : 'Official LiViA Presentation'}</span>
+                    </div>
+                    <ChevronUp size={14} className={`transform transition-transform ${openGuideSection === 'presentation' ? '' : 'rotate-180'}`} />
                   </div>
-
-                  {/* Privacy Box */}
-                  <div className="p-2.5 bg-emerald-100/50 dark:bg-emerald-950/30 border border-emerald-300/60 dark:border-emerald-800/50 rounded-lg text-[10px] text-emerald-900 dark:text-emerald-200 space-y-1">
-                    <strong className="font-bold flex items-center gap-1 text-[11px]">
-                      🔒 {lang === 'it' ? 'Data Privacy & Uso degli Scope OAuth:' : 'Data Privacy & OAuth Scopes Usage:'}
-                    </strong>
-                    <p className="leading-relaxed">
-                      {lang === 'it'
-                        ? 'LiViA accede ai dati dell\'utente esclusivamente per leggere e scrivere i file selezionati esplicitamente dall\'utente tramite l\'integrazione con Google Drive™ e Google Docs™. Tutta l\'elaborazione per i buffer dell\'editor locale rimane sul dispositivo, garantendo massime prestazioni, sicurezza e privacy dei dati.'
-                        : 'LiViA strictly accesses user data only to read and write files explicitly selected by the user via Google Drive™ and Google Docs™ integration. All processing for local editor buffers remains on-device, ensuring maximal performance, security, and data privacy.'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 2. Navigazione & Comandi Vim */}
-                <div id="guide-vim-section" className="bg-gray-50 dark:bg-[#0D0F12] border border-gray-200/80 dark:border-[#2D2D2D] rounded-xl p-3.5 space-y-3">
-                  <h3 className="text-xs font-bold text-gray-800 dark:text-zinc-100 flex items-center gap-1.5">
-                    <Keyboard size={14} className="text-blue-500" />
-                    <span>{lang === 'it' ? 'Navigazione & Comandi Vim' : 'Vim Commands & Navigation'}</span>
-                  </h3>
-
-                  {/* Navigazione Base */}
-                  <div>
-                    <h4 className="font-bold text-gray-700 dark:text-zinc-300 mb-1 uppercase tracking-wider text-[10px]">
-                      {lang === 'it' ? 'Navigazione (Normal Mode & Touch Mobile)' : 'Navigation (Normal Mode & Mobile Touch)'}
-                    </h4>
-                    <div className="space-y-1 font-mono text-[11px]">
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold">h, j, k, l</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? '←, ↓, ↑, → (funzionanti su mobile)' : '←, ↓, ↑, → (works on mobile)'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold">0 / $</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Inizio / Fine riga' : 'Start / End of line'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold">w / 3w</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Avanza di 1 / 3 parole' : 'Forward 1 / 3 words'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold">gg / G</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Inizio / Fine documento' : 'Top / Bottom of doc'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5">
-                        <span className="text-emerald-600 dark:text-[#8AB4F8] font-bold">2g / 2gg</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Vai alla riga 2' : 'Go to line 2'}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Modifica & Folding */}
-                  <div>
-                    <h4 className="font-bold text-gray-700 dark:text-zinc-300 mb-1 uppercase tracking-wider text-[10px]">
-                      {lang === 'it' ? 'Modifica, Redo & Code Folding' : 'Editing, Redo & Code Folding'}
-                    </h4>
-                    <div className="space-y-1 font-mono text-[11px]">
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-amber-500 dark:text-amber-400 font-bold">r&lt;char&gt; / x</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Sostituisci / Elimina car.' : 'Replace / Delete char'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-amber-500 dark:text-amber-400 font-bold">gq</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Spezza paragrafo a textwidth' : 'Wrap paragraph to textwidth'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-red-500 dark:text-rose-400 font-bold">dd / dw</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Elimina riga / parola' : 'Delete line / word'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5 border-b border-gray-100 dark:border-[#2D2D2D]">
-                        <span className="text-amber-500 dark:text-amber-300 font-bold">u / .</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Annulla (Undo) / Ripristina (Redo)' : 'Undo / Redo'}</span>
-                      </div>
-                      <div className="flex justify-between py-0.5">
-                        <span className="text-purple-500 dark:text-purple-300 font-bold">zc / zo / za</span>
-                        <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Chiudi / Apri / Inverti Fold' : 'Close / Open / Toggle Fold'}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 3. Comandi ex (:) & Storico Comandi Su/Giù */}
-                <div id="guide-cmd-section" className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-3.5 space-y-3">
-                  <h3 className="text-xs font-bold text-blue-800 dark:text-[#8AB4F8] flex items-center gap-1.5">
-                    <Terminal size={14} className="text-blue-500" />
-                    <span>{lang === 'it' ? 'Comandi ex (:) & Navigazione Cronologia' : 'Ex Commands (:) & Command History'}</span>
-                  </h3>
-
-                  <div className="space-y-1 font-mono text-[11px]">
-                    <div className="flex justify-between py-0.5 border-b border-blue-100/50 dark:border-[#2D2D2D]">
-                      <span className="text-blue-600 dark:text-[#8AB4F8] font-bold">:w / :q / :wq</span>
-                      <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Salva / Esci / Salva ed esci' : 'Save / Quit / Save & quit'}</span>
-                    </div>
-                    <div className="flex justify-between py-0.5 border-b border-blue-100/50 dark:border-[#2D2D2D]">
-                      <span className="text-blue-600 dark:text-[#8AB4F8] font-bold">{lang === 'it' ? ':set key=LA_TUA_API_KEY' : ':set key=YOUR_GEMINI_KEY'}</span>
-                      <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Imposta API Key Gemini personale' : 'Set personal Gemini API key'}</span>
-                    </div>
-                    <div className="flex justify-between py-0.5 border-b border-blue-100/50 dark:border-[#2D2D2D]">
-                      <span className="text-blue-600 dark:text-[#8AB4F8] font-bold">:set model=pro|flash</span>
-                      <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Cambia modello AI' : 'Switch AI model'}</span>
-                    </div>
-                    <div className="flex justify-between py-0.5 border-b border-blue-100/50 dark:border-[#2D2D2D]">
-                      <span className="text-blue-600 dark:text-[#8AB4F8] font-bold">{lang === 'it' ? ':%s/vecchio/nuovo/g' : ':%s/old/new/g'}</span>
-                      <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Sostituzione testo globale' : 'Global text replace'}</span>
-                    </div>
-                    <div className="flex justify-between py-0.5">
-                      <span className="text-blue-600 dark:text-[#8AB4F8] font-bold">:he / :he gem / :he drive</span>
-                      <span className="text-gray-500 dark:text-zinc-400">{lang === 'it' ? 'Apri guida / argomenti specifici' : 'Open help / specific topics'}</span>
-                    </div>
-                  </div>
-
-                  {/* Navigazione Storico Comandi Su/Giù */}
-                  <div className="p-2.5 bg-white dark:bg-[#0D0F12] rounded-lg border border-blue-200/60 dark:border-blue-900/40 text-[10.5px]">
-                    <strong className="text-blue-800 dark:text-blue-300 block mb-1 font-bold">
-                      📜 {lang === 'it' ? 'Come Navigare lo Storico Comandi (Su / Giù)' : 'How to Navigate Command History (Up / Down)'}
-                    </strong>
-                    <ul className="list-disc pl-4 space-y-1 text-gray-600 dark:text-zinc-300 leading-relaxed text-[10px]">
-                      <li>
-                        <strong>{lang === 'it' ? 'Su Desktop / Tastiera Fisica:' : 'Desktop / Physical Keyboard:'}</strong> {lang === 'it' ? 'Premi i tasti Freccia Su (↑) e Freccia Giù (↓) mentre stai digitando un comando in modalità `:` per scorrere i comandi inviati in precedenza.' : 'Press Up Arrow (↑) and Down Arrow (↓) while in `:` mode to cycle through previous commands.'}
-                      </li>
-                      <li>
-                        <strong>{lang === 'it' ? 'Su Dispositivi Mobili (Smartphone / Tablet):' : 'Mobile Devices (Smartphone / Tablet):'}</strong> {lang === 'it' ? 'Sono presenti due pulsanti touch dedicati Su (▲) e Giù (▼) direttamente a fianco del campo di input del comando `:` per recuperare istantaneamente qualsiasi comando senza bisogno di frecce fisiche!' : 'Dedicated touch buttons Up (▲) and Down (▼) are located directly next to the `:` input field to recall previous commands in 1 tap!'}
-                      </li>
-                    </ul>
-                  </div>
-                </div>
-
-                {/* 4. Integrazione Gemini AI & Gestione API Key Semplificata */}
-                <div id="guide-gemini-section" className="bg-purple-500/5 border border-purple-500/20 rounded-xl p-3.5 space-y-2.5">
-                  <h3 className="text-xs font-bold text-purple-800 dark:text-purple-300 flex items-center gap-1.5">
-                    <Sparkles size={14} className="text-purple-500" />
-                    <span>{lang === 'it' ? 'Integrazione Google Gemini™ AI & Chiave Personale' : 'Google Gemini™ AI Integration & Personal API Key'}</span>
-                  </h3>
-
-                  <p className="text-[11px] text-gray-600 dark:text-zinc-400 leading-relaxed">
-                    {lang === 'it' 
-                      ? 'Invocando i comandi :gem <istruzioni>, :tr <lingua> o :lat <tema>, LiViA elabora il testo dell\'editor o della selezione visiva con l\'IA di Google Gemini™.' 
-                      : 'Using :gem <prompt>, :tr <lang>, or :lat <theme>, LiViA processes editor text or visual selections with Google Gemini™ AI.'}
-                  </p>
-
-                  {/* FAQ & Chiarimenti Chiavi Google AI Studio™ */}
-                  <div className="p-3 bg-white dark:bg-[#0D0F12] rounded-lg border border-purple-200/60 dark:border-purple-900/40 space-y-2.5 text-[10.5px]">
-                    <strong className="text-purple-800 dark:text-purple-300 font-bold block text-[11px]">
-                      🔑 {lang === 'it' ? 'Guida Definitiva: API Key, Abbonamenti & Volumi di Lavoro' : 'Definitive Guide: API Keys, Subscriptions & Workloads'}
-                    </strong>
-                    
-                    <div className="space-y-2 text-gray-600 dark:text-zinc-300 text-[10px] leading-relaxed">
-                      {/* Punto 1: Disaccoppiamento Abbonamenti */}
-                      <p>
-                        <strong>{lang === 'it' ? '1. 🚫 Abbonamenti Consumer (Google One™ AI Premium / Gemini Advanced™) vs API Key:' : '1. 🚫 Consumer Subscriptions (Google One™ AI Premium / Gemini Advanced™) vs API Keys:'}</strong><br />
+                  {openGuideSection === 'presentation' && (
+                    <div className="p-3 space-y-2.5 text-[10.5px] border-t border-emerald-100 dark:border-[#2D2D2D]">
+                      <p className="text-gray-800 dark:text-zinc-200 font-medium leading-relaxed bg-gray-50 dark:bg-[#0D0F12] p-2.5 rounded-lg border border-gray-200/60 dark:border-[#2D2D2D]">
                         {lang === 'it'
-                          ? 'Gli abbonamenti consumer (es. Google One™ AI Premium / Gemini Advanced™ a pagamento mensile) servono unicamente per la chat web (gemini.google.com) e NotebookLM™. NON includono, NON forniscono e NON sostituiscono le API Key per sviluppatori/app come LiViA. Essere o non essere abbonati a Google One™ AI Premium non cambia nulla per Google AI Studio™ e LiViA: l\'uso delle API è regolato su un circuito completamente separato.'
-                          : 'Consumer subscriptions (e.g. monthly Google One™ AI Premium / Gemini Advanced™) strictly cover web chat (gemini.google.com) and NotebookLM™. They do NOT grant, include, or replace developer API Keys for applications like LiViA. Being subscribed or not to Google One™ AI Premium makes zero difference for Google AI Studio™ or LiViA: API usage runs on a completely separate infrastructure.'}
+                          ? "LiViA (Light Vi Again) è un editor di testo e codice iper-leggero e modale in stile Vim. Unisce perfettamente l'editing offline con l'integrazione Google Workspace™."
+                          : "LiViA (Light Vi Again) is a hyper-lightweight, modal Vim-style editor. It seamlessly bridges offline editing with Google Workspace™ integration."}
                       </p>
+                      <ul className="space-y-1.5 text-gray-700 dark:text-zinc-300 leading-snug list-disc pl-4">
+                        <li><strong>Vim Engine:</strong> {lang === 'it' ? 'Modalità Normal, Insert e Visual native.' : 'Native Normal, Insert, and Visual modes.'}</li>
+                        <li><strong>Offline-First:</strong> {lang === 'it' ? 'Nessun database richiesto. File salvati nel browser.' : 'No database required. Files saved in browser.'}</li>
+                        <li><strong>Workspace SDK:</strong> {lang === 'it' ? 'Apertura diretta da Drive™ e Docs™.' : 'Direct open from Drive™ and Docs™.'}</li>
+                      </ul>
+                    </div>
+                  )}
+                </div>
 
-                      {/* Punto 2: Come ottenere l'API Key Gratuita (Free Tier) */}
+                {/* 2. Scorciatoie Vim */}
+                <div className="group bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden shrink-0">
+                  <div 
+                    onClick={() => setOpenGuideSection(openGuideSection === 'vim' ? '' : 'vim')}
+                    className="flex items-center justify-between p-3 font-bold text-xs text-gray-800 dark:text-gray-200 cursor-pointer select-none bg-gray-50/50 dark:bg-[#16181D]/50 hover:bg-gray-50 dark:hover:bg-zinc-800 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Terminal size={14} className="text-gray-500" />
+                      <span>{lang === 'it' ? 'Comandi Vim Principali' : 'Main Vim Commands'}</span>
+                    </div>
+                    <ChevronUp size={14} className={`transform transition-transform ${openGuideSection === 'vim' ? '' : 'rotate-180'}`} />
+                  </div>
+                  {openGuideSection === 'vim' && (
+                    <div className="p-3 space-y-2.5 text-[10.5px] border-t border-gray-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
+                      <ul className="space-y-1 list-disc pl-4">
+                        <li><code>i</code> {lang === 'it' ? 'Modalità Inserimento' : 'Insert Mode'}</li>
+                        <li><code>Esc</code> {lang === 'it' ? 'Modalità Comando (Normale)' : 'Command Mode (Normal)'}</li>
+                        <li><code>v</code> {lang === 'it' ? 'Modalità Visuale' : 'Visual Mode'}</li>
+                        <li><code>:w</code> {lang === 'it' ? 'Salva (Virtuale)' : 'Save (Virtual)'}</li>
+                        <li><code>:q</code> {lang === 'it' ? 'Chiudi file corrente' : 'Close current file'}</li>
+                        <li><code>:he</code> {lang === 'it' ? 'Apri Manuale Completo' : 'Open Full Manual'}</li>
+                      </ul>
+                    </div>
+                  )}
+                </div>
+                
+                {/* 3. Gemini Gems & API */}
+                <div className="group bg-white dark:bg-[#16181D] border border-blue-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden shrink-0">
+                  <div 
+                    onClick={() => setOpenGuideSection(openGuideSection === 'ai' ? '' : 'ai')}
+                    className="flex items-center justify-between p-3 font-bold text-xs text-blue-800 dark:text-blue-400 cursor-pointer select-none bg-blue-50/50 dark:bg-blue-900/10 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-blue-500" />
+                      <span>{lang === 'it' ? 'Gemini AI & Profili' : 'Gemini AI & Profiles'}</span>
+                    </div>
+                    <ChevronUp size={14} className={`transform transition-transform ${openGuideSection === 'ai' ? '' : 'rotate-180'}`} />
+                  </div>
+                  {openGuideSection === 'ai' && (
+                    <div className="p-3 space-y-2 text-[10.5px] border-t border-blue-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
                       <p>
-                        <strong>{lang === 'it' ? '2. 🎁 API Key Personale Gratuita (Free Tier $0 su Google AI Studio™):' : '2. 🎁 Free Personal API Key ($0 Free Tier on Google AI Studio™):'}</strong><br />
+                        <strong>{lang === 'it' ? 'Gemini Gems (Profili AI):' : 'Gemini Gems (AI Profiles):'}</strong><br />
                         {lang === 'it'
-                          ? 'TUTTI i titolari di un account Google (abbonati o meno) possono accedere a Google AI Studio™ (aistudio.google.com) e generare in 1-Click la propria API Key 100% GRATUITA (senza carta di credito). Impostando la chiave personale in LiViA (`set key=chiave_mia` o nelle Impostazioni) ottieni la tua quota personale riservata (fino a 15 chiamate/min su Flash e 2/min su Pro) evitando le code della chiave condivisa di sistema.'
-                          : 'ALL Google account holders (subscribed or not) can log into Google AI Studio™ (aistudio.google.com) and generate a 100% FREE API Key with 1-Click (no credit card required). Setting your personal key in LiViA (`set key=my_key` or in Settings) grants your own reserved quota (up to 15 req/min on Flash and 2 req/min on Pro), bypassing public shared key rate limits.'}
+                          ? 'Configura istruzioni di sistema (System Prompts) dalle Impostazioni per alterare il comportamento dell\'IA. Quando attivi un profilo dalla tendina in alto, questo funge da direttiva prioritaria.'
+                          : 'Configure system instructions from Settings to alter AI behavior. When a profile is active from the top dropdown, it acts as the primary directive.'}
                       </p>
+                      <p className="mt-2">
+                        <strong>{lang === 'it' ? 'Comandi AI Rapidi:' : 'Quick AI Commands:'}</strong>
+                      </p>
+                      <ul className="space-y-1 list-disc pl-4">
+                        <li><code>:ai &lt;prompt&gt;</code> {lang === 'it' ? 'Applica istruzione al testo' : 'Apply instruction to text'}</li>
+                        <li><code>:tr &lt;lang&gt;</code> {lang === 'it' ? 'Traduci (es. :tr it)' : 'Translate (e.g. :tr it)'}</li>
+                        <li><code>:lat &lt;tema&gt;</code> {lang === 'it' ? 'Testo segnaposto (es. standard)' : 'Placeholder (e.g. standard)'}</li>
+                      </ul>
+                      <p className="mt-2">
+                        <strong>{lang === 'it' ? 'Chiavi API & Volumi:' : 'API Keys & Workloads:'}</strong><br />
+                        {lang === 'it' 
+                          ? 'Usa la tua API Key gratuita (Google AI Studio) nelle Impostazioni. Gli abbonamenti consumer (es. Google One AI Premium) NON includono API per sviluppatori.' 
+                          : 'Use your free API Key (Google AI Studio) in Settings. Consumer subscriptions (e.g. Google One AI Premium) DO NOT include developer APIs.'}
+                      </p>
+                    </div>
+                  )}
+                </div>
 
-                      {/* Punto 3: Quando serve il Pay-As-You-Go per grandi volumi */}
+                {/* 4. Formattazione Avanzata */}
+                <div className="group bg-white dark:bg-[#16181D] border border-purple-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden shrink-0">
+                  <div 
+                    onClick={() => setOpenGuideSection(openGuideSection === 'format' ? '' : 'format')}
+                    className="flex items-center justify-between p-3 font-bold text-xs text-purple-800 dark:text-purple-400 cursor-pointer select-none bg-purple-50/50 dark:bg-purple-900/10 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <BookOpen size={14} className="text-purple-500" />
+                      <span>{lang === 'it' ? 'Guide Formattazione & Immagini' : 'Formatting & Images Guides'}</span>
+                    </div>
+                    <ChevronUp size={14} className={`transform transition-transform ${openGuideSection === 'format' ? '' : 'rotate-180'}`} />
+                  </div>
+                  {openGuideSection === 'format' && (
+                    <div className="p-3 space-y-2.5 border-t border-purple-100 dark:border-[#2D2D2D]">
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          onClick={() => {
+                            let f = virtualFiles.find(x => x.name === 'help_colors.md');
+                            if (!f) f = HELP_COLORS_TEMPLATE;
+                            setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_colors.md'), f!]);
+                            setFileHistory(prev => [...prev, filename]);
+                            setContent(f.content);
+                            setFilename('help_colors.md');
+                            setFormat('md');
+                          }}
+                          className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                        >
+                          🎨 {lang === 'it' ? 'Colori' : 'Colors'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            let f = virtualFiles.find(x => x.name === 'help_figures.md');
+                            if (!f) f = HELP_FIGURES_TEMPLATE;
+                            setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_figures.md'), f!]);
+                            setFileHistory(prev => [...prev, filename]);
+                            setContent(f.content);
+                            setFilename('help_figures.md');
+                            setFormat('md');
+                          }}
+                          className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                        >
+                          🖼️ {lang === 'it' ? 'Immagini' : 'Images'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            let f = virtualFiles.find(x => x.name === 'help_tables.md');
+                            if (!f) f = HELP_TABLES_TEMPLATE;
+                            setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_tables.md'), f!]);
+                            setFileHistory(prev => [...prev, filename]);
+                            setContent(f.content);
+                            setFilename('help_tables.md');
+                            setFormat('md');
+                          }}
+                          className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                        >
+                          📊 {lang === 'it' ? 'Tabelle' : 'Tables'}
+                        </button>
+                        <button
+                          onClick={() => {
+                            let f = virtualFiles.find(x => x.name === 'help_ai.md');
+                            if (!f) f = getHelpAiTemplate(lang);
+                            setVirtualFiles(prev => [...prev.filter(x => x.name !== 'help_ai.md'), f!]);
+                            setFileHistory(prev => [...prev, filename]);
+                            setContent(f.content);
+                            setFilename('help_ai.md');
+                            setFormat('md');
+                          }}
+                          className="p-1.5 bg-purple-100 dark:bg-purple-900/30 text-purple-800 dark:text-purple-300 rounded text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
+                        >
+                          🤖 {lang === 'it' ? 'AI Gems' : 'AI Gems'}
+                        </button>
+                      </div>
+                      
+                      <p className="text-[10px] text-gray-700 dark:text-zinc-300 mt-2">
+                        <strong>{lang === 'it' ? 'Perché niente import automatico Drive/Firebase per le immagini?' : 'Why no automatic Drive/Firebase import for images?'}</strong><br/>
+                        {lang === 'it' 
+                          ? 'LiViA è un editor offline testuale in RAM (VFS). I file Markdown (.md) non contengono binari. Per motivi di sicurezza (CORS), il browser impedisce all\'app di estrarre immagini Cloud senza esplicito permesso. Puoi usare URL pubblici, Base64 (salvato nel file) o URL Blob temporanei (perfetti per esportazione rapida PDF).'
+                          : 'LiViA is an offline text-based in-RAM editor (VFS). Markdown (.md) files cannot hold binaries. For security reasons (CORS), the browser prevents the app from pulling Cloud images without explicit permission. You can use public URLs, Base64 (saved in file), or temporary Blob URLs (perfect for rapid PDF export).'}
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* 5. Moolenaar */}
+                <div className="group bg-white dark:bg-[#16181D] border border-amber-200 dark:border-[#2D2D2D] rounded-xl overflow-hidden shrink-0">
+                  <div 
+                    onClick={() => setOpenGuideSection(openGuideSection === 'memory' ? '' : 'memory')}
+                    className="flex items-center justify-between p-3 font-bold text-xs text-amber-800 dark:text-amber-400 cursor-pointer select-none bg-amber-50/50 dark:bg-amber-900/10 hover:bg-amber-50 dark:hover:bg-amber-900/20 transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Sparkles size={14} className="text-amber-500" />
+                      <span>{lang === 'it' ? 'In Memoria & Copyright' : 'In Memory & Copyright'}</span>
+                    </div>
+                    <ChevronUp size={14} className={`transform transition-transform ${openGuideSection === 'memory' ? '' : 'rotate-180'}`} />
+                  </div>
+                  {openGuideSection === 'memory' && (
+                    <div className="p-3 space-y-2 text-[10.5px] border-t border-amber-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
                       <p>
-                        <strong>{lang === 'it' ? '3. ⚡ Serve Google Cloud Billing / Carta di Credito per analizzare grandi documenti in LiViA?' : '3. ⚡ Do you need Google Cloud Billing / Credit Card for large documents in LiViA?'}</strong><br />
                         {lang === 'it'
-                          ? 'NO! Il piano GRATUITO ($0 Free Tier) su Google AI Studio™ supporta già una finestra di contesto enorme (fino a 2 Milioni di token, pari a centinaia di pagine di documenti DOCX/PDF o intere basi di codice). Gli utenti normali NON devono collegare alcuna carta di credito o account di fatturazione. L\'associazione di un account Google Cloud Billing™ (Pay-As-You-Go) è un\'opzione riservata esclusivamente a sviluppatori ed aziende con chiamate API automatizzate ad altissimo volume che superano i limiti di frequenza gratuiti.'
-                          : 'NO! The $0 Free Tier on Google AI Studio™ already includes a massive context window (up to 2 Million tokens, equivalent to hundreds of pages of DOCX/PDF files or full codebases). Regular users do NOT need to link any credit card or billing account. Linking a Google Cloud Billing™ account (Pay-As-You-Go) is purely optional for developers and enterprise pipelines requiring high-throughput automated API calls beyond free rate limits.'}
+                          ? "In memoria di Bram Moolenaar (1961 - 2023), l'altruista creatore di Vim. LiViA è un piccolo omaggio alla sua filosofia e invita a sostenere i bambini in Uganda (ICCF Holland)."
+                          : "In memory of Bram Moolenaar (1961 - 2023), the altruistic creator of Vim. LiViA is a small tribute to his philosophy, encouraging users to support orphans in Uganda (ICCF Holland)."}
                       </p>
-
-                      {/* Punto 4: Statistiche e Tracciamento */}
-                      <p>
-                        <strong>{lang === 'it' ? '4. 📊 Che cosa tracciano le statistiche su Google AI Studio™?' : '4. 📊 What do stats on Google AI Studio™ actually track?'}</strong><br />
-                        {lang === 'it'
-                          ? 'Le metriche e i grafici di consumo su Google AI Studio™ misurano unicamente le chiamate API effettuate tramite la tua chiave (es. da LiViA, da script o SDK). NON intaccano e NON riflettono l\'uso della chat web Gemini™ o NotebookLM™.'
-                          : 'Metrics and usage charts on Google AI Studio™ strictly measure API requests made via your API Key (e.g. from LiViA, scripts, or SDKs). They do NOT affect or reflect Gemini™ web chat or NotebookLM™ usage.'}
-                      </p>
-
-                      {/* Punto 5: Come generare la tua API Key */}
-                      <p>
-                        <strong>{lang === 'it' ? '5. 🎯 Come generare la tua API Key in 1-Click:' : '5. 🎯 How to generate your API Key in 1-Click:'}</strong><br />
-                        {lang === 'it'
-                          ? 'Accedi a Google AI Studio (aistudio.google.com/app/apikey) con il tuo account Google e fai clic sul pulsante blu "Create API key" (Crea chiave API). Copia la chiave generata e incollala in LiViA nelle Impostazioni o con il comando `:set key=la_tua_chiave`. La chiave è subito attiva, 100% gratuita e riservata al tuo account.'
-                          : 'Log into Google AI Studio (aistudio.google.com/app/apikey) with your Google account and click the blue "Create API key" button. Copy the generated key and paste it into LiViA in Settings or via `:set key=your_key`. The key is active immediately, 100% free, and dedicated to your account.'}
-                      </p>
-
-                      {/* Punto 6: Linux Live OS */}
-                      <div>
-                        <strong className="text-purple-900 dark:text-purple-200 block mb-1">
-                          {lang === 'it' ? '🔄 Gestione della Chiave su Linux Live OS (4 Metodi):' : '🔄 Key Management on Linux Live OS (4 Methods):'}
-                        </strong>
-                        <p className="mb-1.5">
-                          {lang === 'it'
-                            ? 'Sulle distribuzioni Linux Live la memoria del browser viene azzerata al riavvio. Puoi mantenere attiva la tua API Key con uno di questi metodi:'
-                            : 'On Linux Live OS builds, browser memory resets on reboot. You can keep your personal API Key active using one of these methods:'}
-                        </p>
-                        <ul className="list-disc pl-4 space-y-1.5 text-[10px]">
-                          <li>
-                            <strong>{lang === 'it' ? 'Metodo 1: Dalla Scheda "Cloud" (Google Drive™) nell\'Editor (Consigliato):' : 'Method 1: From the "Cloud" (Google Drive™) Tab in the Editor (Recommended):'}</strong>{' '}
-                            {lang === 'it'
-                              ? 'Carica o apri il tuo file .lvarc da Google Drive™ tramite la scheda "Cloud" di LiViA (contenente la riga set key=LA_TUA_API_KEY). LiViA lo sincronizza e applica la chiave all\'istante senza digitare nulla!'
-                              : 'Open your .lvarc file from Google Drive™ via LiViA\'s "Cloud" tab (containing set key=YOUR_API_KEY). LiViA synchronizes and applies your key instantly without typing!'}
-                          </li>
-                          <li>
-                            <strong>{lang === 'it' ? 'Metodo 2: Profilo Browser Pre-configurato prima dell\'ISO Live:' : 'Method 2: Pre-configured Browser Profile Before Live ISO Creation:'}</strong>{' '}
-                            {lang === 'it'
-                              ? 'Se imposti la chiave nelle impostazioni di LiViA o crei un segnalibro con ?key= nel profilo del browser PRIMA di creare/masterizzare la tua ISO Live, ad ogni avvio il sistema partirà con il browser 100% pronto e configurato!'
-                              : 'If you set your key in LiViA settings or save a bookmark with ?key= in your browser profile BEFORE creating/remastering your Live ISO image, every boot of the Live OS starts with a 100% prepared browser!'}
-                          </li>
-                          <li>
-                            <strong>{lang === 'it' ? 'Metodo 3: Segnalibro URL con Parametro ?key=:' : 'Method 3: URL Bookmark with ?key= Parameter:'}</strong>{' '}
-                            {lang === 'it'
-                              ? 'Salva nei preferiti dell\'ISO Live l\'URL con ?key=LA_TUA_API_KEY (es. https://...run.app/?key=AIzaSy...). All\'apertura LiViA memorizza la chiave e pulisce l\'URL per sicurezza.'
-                              : 'Bookmark your app URL with ?key=YOUR_API_KEY (e.g. https://...run.app/?key=AIzaSy...). When opened, LiViA loads and saves the key, then cleans the address bar for privacy.'}
-                          </li>
-                          <li>
-                            <strong>{lang === 'it' ? 'Metodo 4: Comando Vim e File .lvarc Locale:' : 'Method 4: Vim Command & Local .lvarc File:'}</strong>{' '}
-                            {lang === 'it'
-                              ? 'Digita :set key=LA_TUA_API_KEY in modalità comando o aggiungila direttamente al file virtuale .lvarc nell\'editor.'
-                              : 'Type :set key=YOUR_API_KEY in command mode or add it directly to the virtual .lvarc file in the editor.'}
-                          </li>
-                        </ul>
+                      <div className="pt-2 border-t border-gray-100 dark:border-[#2D2D2D]">
+                        <strong>Author:</strong> Ing. Mario Fantini<br/>
+                        {lang === 'it' ? 'Tutti i diritti riservati.' : 'All rights reserved.'}
                       </div>
                     </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2 pt-1.5">
-                      <button
-                        type="button"
-                        onClick={() => setIsSettingsModalOpen(true)}
-                        className="flex-1 py-1.5 px-3 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-bold text-[11px] transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
-                      >
-                        <Settings size={13} />
-                        <span>{lang === 'it' ? 'Apri Impostazioni & Inserisci Chiave API' : 'Open Settings & Enter API Key'}</span>
-                      </button>
-                      <a
-                        href="https://aistudio.google.com/app/apikey"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="py-1.5 px-3 rounded-lg border border-purple-300 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/40 hover:bg-purple-100 text-purple-700 dark:text-purple-300 font-bold text-[10.5px] transition-all flex items-center justify-center gap-1"
-                      >
-                        <ExternalLink size={12} />
-                        <span>{lang === 'it' ? '1-Click: Genera API Key (Google AI Studio™)' : '1-Click: Get API Key (Google AI Studio™)'}</span>
-                      </a>
-                    </div>
-                  </div>
+                  )}
                 </div>
 
-                {/* 5. Configurazione Avanzata (.lvarc) */}
-                <div id="guide-lvarc-section" className="bg-[#8AB4F8]/10 border border-[#8AB4F8]/20 rounded-xl p-3.5 space-y-2">
-                  <h3 className="text-xs font-bold text-blue-800 dark:text-[#8AB4F8] flex items-center gap-1.5">
-                    <Settings size={14} className="text-[#8AB4F8]" />
-                    <span>{lang === 'it' ? 'Configurazione Avanzata (.lvarc)' : 'Advanced Configuration (.lvarc)'}</span>
-                  </h3>
-                  <p className="text-[11px] text-gray-600 dark:text-zinc-400 leading-relaxed font-sans">
-                    {lang === 'it' 
-                      ? 'LiViA carica automaticamente all\'avvio il file virtuale .lvarc per applicare le preferenze salvate senza digitare comandi ogni volta:' 
-                      : 'LiViA automatically loads .lvarc to persist preferences:'}
-                  </p>
-                  <div className="p-2.5 bg-gray-900 text-emerald-400 rounded-lg font-mono text-[10px] space-y-1">
-                    {lang === 'it' ? (
-                      <>
-                        <div>set key=AIzaSy... <span className="text-gray-500"># Chiave API Gemini personale (Auto-caricata)</span></div>
-                        <div>set number <span className="text-gray-500"># Mostra numeri di riga</span></div>
-                        <div>set wrap <span className="text-gray-500"># Testo a capo</span></div>
-                        <div>set syntax=on <span className="text-gray-500"># Sintassi colorata</span></div>
-                        <div>set model=flash <span className="text-gray-500"># flash | pro</span></div>
-                        <div>set theme=dark <span className="text-gray-500"># dark | light | system</span></div>
-                        <div>set lang=it <span className="text-gray-500"># it | en</span></div>
-                      </>
-                    ) : (
-                      <>
-                        <div>set key=AIzaSy... <span className="text-gray-500"># Personal Gemini API key (Auto-loaded)</span></div>
-                        <div>set number <span className="text-gray-500"># Show line numbers</span></div>
-                        <div>set wrap <span className="text-gray-500"># Word wrap text</span></div>
-                        <div>set syntax=on <span className="text-gray-500"># Syntax highlighting</span></div>
-                        <div>set model=flash <span className="text-gray-500"># flash | pro</span></div>
-                        <div>set theme=dark <span className="text-gray-500"># dark | light | system</span></div>
-                        <div>set lang=en <span className="text-gray-500"># it | en</span></div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* 6. Integrazione Google Drive & Google Docs */}
-                <div id="guide-workspace-section" className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3.5 space-y-2.5">
-                  <h3 className="text-xs font-bold text-emerald-800 dark:text-emerald-400 flex items-center gap-1.5">
-                    <Cloud size={14} className="text-emerald-500" />
-                    <span>{lang === 'it' ? 'Integrazione Google Drive™ & Google Docs™' : 'Google Drive™ & Google Docs™ Integration'}</span>
-                  </h3>
-                  
-                  <div className="p-2.5 bg-white dark:bg-[#0D0F12] border border-emerald-200 dark:border-[#2D2D2D] rounded-lg text-[10.5px] space-y-1.5">
-                    <strong className="text-emerald-700 dark:text-emerald-400 block font-bold">
-                      📄 {lang === 'it' ? 'Conversione Automatica Google Docs (.gdoc) -> Markdown' : 'Automatic Google Docs (.gdoc) -> Markdown Conversion'}
-                    </strong>
-                    <p className="text-gray-600 dark:text-zinc-300 leading-relaxed text-[10px]">
-                      {lang === 'it' 
-                        ? 'Quando apri un file Google Docs (.gdoc) da Google Drive™, LiViA lo converte automaticamente in Markdown pulito, eliminando file corrotti o codici binari!' 
-                        : 'Opening a Google Docs file (.gdoc) from Google Drive™ automatically converts it into clean Markdown, avoiding unreadable text.'}
-                    </p>
-                  </div>
-
-                  {/* Utilizzo Menu Apri con > LiViA su Drive */}
-                  <div className="p-2.5 bg-white dark:bg-[#0D0F12] border border-emerald-200 dark:border-[#2D2D2D] rounded-lg text-[10.5px] space-y-1.5">
-                    <strong className="text-emerald-800 dark:text-emerald-300 block font-bold">
-                      📂 {lang === 'it' ? 'Apertura e Creazione Documenti su Google Drive™' : 'Opening & Creating Documents on Google Drive™'}
-                    </strong>
-                    <p className="text-gray-600 dark:text-zinc-300 text-[10px] leading-relaxed">
-                      {lang === 'it'
-                        ? 'In Google Drive™, fai clic con il tasto destro del mouse su qualsiasi documento o file di codice e seleziona "Apri con" ➔ "LiViA Editor" per aprirlo e modificarlo direttamente nell\'editor.'
-                        : 'In Google Drive™, right-click any document or code file and select "Open with" ➔ "LiViA Editor" to open and edit it directly in the editor.'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 8. Guide Formattazione Avanzata (Colori, Immagini, Figure, Tabelle) */}
-                <div className="bg-purple-500/5 border border-purple-500/15 rounded-xl p-3.5 space-y-2 font-sans">
-                  <h3 className="text-xs font-bold text-purple-800 dark:text-purple-300 flex items-center gap-1.5">
-                    <BookOpen size={14} className="text-purple-500" />
-                    <span>{lang === 'it' ? 'Guide Formattazione Avanzata (MD & DOCX)' : 'Advanced Formatting Guides (MD & DOCX)'}</span>
-                  </h3>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <button
-                      onClick={() => {
-                        let colFile = virtualFiles.find(f => f.name === 'help_colors.md');
-                        if (!colFile) {
-                          colFile = HELP_COLORS_TEMPLATE;
-                          setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_colors.md'), colFile!]);
-                        }
-                        setContent(colFile.content);
-                        setFilename('help_colors.md');
-                        setFormat('md');
-                        showToast(lang === 'it' ? 'Aperta guida Colori!' : 'Opened Color guide!', 'info');
-                      }}
-                      className="p-2 bg-purple-100 dark:bg-purple-950/40 text-purple-800 dark:text-purple-300 rounded-lg text-[10px] font-bold text-center border border-purple-200 dark:border-purple-800/50 cursor-pointer"
-                    >
-                      🎨 {lang === 'it' ? 'Colori' : 'Colors'}
-                    </button>
-                    <button
-                      onClick={() => {
-                        let figFile = virtualFiles.find(f => f.name === 'help_figures.md');
-                        if (!figFile) {
-                          figFile = HELP_FIGURES_TEMPLATE;
-                          setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_figures.md'), figFile!]);
-                        }
-                        setContent(figFile.content);
-                        setFilename('help_figures.md');
-                        setFormat('md');
-                        showToast(lang === 'it' ? 'Aperta guida Figure!' : 'Opened Figure guide!', 'info');
-                      }}
-                      className="p-2 bg-blue-100 dark:bg-blue-950/40 text-blue-800 dark:text-[#8AB4F8] rounded-lg text-[10px] font-bold text-center border border-blue-200 dark:border-blue-800/50 cursor-pointer"
-                    >
-                      🖼️ {lang === 'it' ? 'Figure' : 'Figures'}
-                    </button>
-                    <button
-                      onClick={() => {
-                        let tabFile = virtualFiles.find(f => f.name === 'help_tables.md');
-                        if (!tabFile) {
-                          tabFile = HELP_TABLES_TEMPLATE;
-                          setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_tables.md'), tabFile!]);
-                        }
-                        setContent(tabFile.content);
-                        setFilename('help_tables.md');
-                        setFormat('md');
-                        showToast(lang === 'it' ? 'Aperta guida Tabelle!' : 'Opened Table guide!', 'info');
-                      }}
-                      className="p-2 bg-emerald-100 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 rounded-lg text-[10px] font-bold text-center border border-emerald-200 dark:border-emerald-800/50 cursor-pointer"
-                    >
-                      📊 {lang === 'it' ? 'Tabelle' : 'Tables'}
-                    </button>
-                  </div>
-                </div>
-
-                {/* 9. Risoluzione Problemi / Aggiornamenti Android */}
-                <div className="bg-red-50 dark:bg-red-950/20 border border-red-200 dark:border-red-900/40 rounded-xl p-3.5 space-y-2 font-sans">
-                  <h3 className="text-xs font-bold text-red-800 dark:text-red-400 flex items-center gap-1.5">
-                    <RefreshCw size={14} className="text-red-500" />
-                    <span>{lang === 'it' ? 'Risoluzione Problemi Aggiornamenti (Android / Chrome)' : 'Update Troubleshooting (Android / Chrome)'}</span>
-                  </h3>
-                  <div className="space-y-1.5 text-gray-700 dark:text-zinc-300 text-[10px] leading-relaxed">
-                    <p>
-                      {lang === 'it'
-                        ? 'Se hai installato LiViA come App su Android (PWA) e non ricevi gli ultimi aggiornamenti, il Service Worker di Chrome potrebbe bloccarli nella cache offline. Per forzare un aggiornamento pulito:'
-                        : 'If you installed LiViA as an Android App (PWA) and aren\'t receiving the latest updates, Chrome\'s Service Worker might be locking the offline cache. To force a clean update:'}
-                    </p>
-                    <ol className="list-decimal pl-4 space-y-0.5 mt-1 font-semibold text-gray-800 dark:text-zinc-200">
-                      <li>{lang === 'it' ? 'Vai in Impostazioni Android > App > Chrome' : 'Go to Android Settings > Apps > Chrome'}</li>
-                      <li>{lang === 'it' ? 'Seleziona "Spazio di archiviazione e cache"' : 'Select "Storage and cache"'}</li>
-                      <li>{lang === 'it' ? 'Tocca "Gestisci spazio" e poi "Elimina tutti i dati"' : 'Tap "Manage space" then "Clear all data"'}</li>
-                    </ol>
-                    <p className="text-red-700 dark:text-red-400 italic mt-1.5 font-medium">
-                      {lang === 'it'
-                        ? '⚠️ Attenzione: questa procedura è radicale e ti disconnetterà dagli altri siti su Chrome. È consigliata solo se l\'App non si aggiorna in alcun modo.'
-                        : '⚠️ Warning: this is a radical procedure that will log you out of other Chrome websites. Only recommended if the App refuses to update.'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 10. Tributo a Bram Moolenaar, Copyright & Licenza (TASSATIVAMENTE ALLA FINE) */}
-                <div className="mt-2 space-y-2">
-                  {/* Tributo Moolenaar */}
-                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded-xl p-3">
-                    <h3 className="text-xs font-bold text-amber-800 dark:text-amber-400 mb-1 flex items-center gap-1.5">
-                      <Sparkles size={13} className="text-amber-500" />
-                      <span>{lang === 'it' ? 'In Memoria di Bram Moolenaar' : 'In Memory of Bram Moolenaar'}</span>
-                    </h3>
-                    <p className="text-[10px] text-gray-700 dark:text-zinc-300 leading-relaxed">
-                      {lang === 'it'
-                        ? "In memoria di Bram Moolenaar (1961 - 2023), l'altruista creatore di Vim. LiViA è un piccolo e umile omaggio alla sua filosofia di sviluppo e invita i suoi utenti a sostenere i bambini in Uganda (tramite ICCF Holland)."
-                        : "In memory of Bram Moolenaar (1961 - 2023), the altruistic creator of Vim. LiViA is a small and humble tribute to his engineering philosophy, encouraging users to support orphans in Uganda (via ICCF Holland)."}
-                    </p>
-                  </div>
-
-                  {/* Copyright & Licenza */}
-                  <div className="bg-gray-100 dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl p-3 text-[10px] text-gray-500 dark:text-zinc-400 space-y-1">
-                    <h4 className="font-bold text-gray-700 dark:text-zinc-300 text-[11px] mb-1">
-                      {lang === 'it' ? 'Copyright & Licenza' : 'Copyright & License'}
-                    </h4>
-                    <p>
-                      <strong>{lang === 'it' ? 'Autore:' : 'Author:'}</strong> Ing. Mario Fantini (
-                      <a 
-                        href="https://mariofantini.eu" 
-                        target="_blank" 
-                        rel="noopener noreferrer"
-                        className="text-emerald-600 dark:text-emerald-400 hover:underline font-semibold"
-                      >
-                        https://mariofantini.eu
-                      </a>
-                      )
-                    </p>
-                    <p>
-                      <strong>{lang === 'it' ? 'Piattaforme di sviluppo:' : 'Development platforms:'}</strong> Ecosistema Google™
-                    </p>
-                    <p>
-                      <strong>{lang === 'it' ? 'Sistemi supportati:' : 'Supported systems:'}</strong> Android™, Linux, ChromeOS™, WEB, Microsoft Windows, macOS
-                    </p>
-                    <p>
-                      {lang === 'it'
-                        ? "© 2026. Condivisibile, modificabile e derivabile liberamente con attribuzione obbligatoria. È strettamente proibito l'uso commerciale (CC BY-NC 4.0)."
-                        : "© 2026. Shareable, modifiable, and derivable with mandatory attribution. Commercial use is strictly prohibited (CC BY-NC 4.0)."}
-                    </p>
-                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-[#3D3D3D]">
-                      <strong>{lang === 'it' ? 'Avviso sulla Proprietà Intellettuale:' : 'Intellectual Property Notice:'}</strong><br/>
-                      {lang === 'it'
-                        ? "Questa architettura software, logica di parsing e codice sorgente sono opera proprietaria dell'autore. Manifestazioni di interesse per l'acquisizione completa dei diritti commerciali e il buyout di proprietà sono ben accette, previo accordo economico, pur preservando la paternità storica e morale."
-                        : "This software architecture, parsing logic, and source code are the proprietary work of the author. Manifestations of interest for the complete acquisition of commercial rights and ownership buyout are welcome, subject to prior economic agreement, while preserving the historical and moral authorship."}
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
-
-
-
-
-
-
-
 
             {/* Prompt Mode Information footnote */}
             <div className="mt-auto pt-3 border-t border-gray-100 dark:border-[#2D2D2D] text-[10px] text-gray-400 dark:text-zinc-500 text-center leading-relaxed font-sans">
@@ -2685,19 +2534,28 @@ export default function App() {
       />
 
       {/* Settings & Gemini Key Modal */}
-      <SettingsModal
-        isOpen={isSettingsModalOpen}
-        onClose={() => setIsSettingsModalOpen(false)}
-        lang={lang}
-        setLang={setLang}
-        showLineNumbers={showLineNumbers}
-        setShowLineNumbers={setShowLineNumbers}
-        syntaxHighlightOn={syntaxHighlightOn}
-        setSyntaxHighlightOn={setSyntaxHighlightOn}
-        editorFontSize={editorFontSize}
-        setEditorFontSize={setEditorFontSize}
-        showToast={showToast}
-      />
+              <SettingsModal
+          isOpen={isSettingsModalOpen}
+          onClose={() => setIsSettingsModalOpen(false)}
+          lang={lang}
+          setLang={setLang}
+          showLineNumbers={showLineNumbers}
+          setShowLineNumbers={setShowLineNumbers}
+          syntaxHighlightOn={syntaxHighlightOn}
+            setSyntaxHighlightOn={setSyntaxHighlightOn}
+          editorFontSize={editorFontSize}
+          setEditorFontSize={setEditorFontSize}
+                    onOpenAiProfilesModal={() => setIsAiProfilesModalOpen(true)}
+          showToast={showToast}
+        />
+        <AiProfilesModal
+          isOpen={isAiProfilesModalOpen}
+          onClose={() => setIsAiProfilesModalOpen(false)}
+          lang={lang}
+          profiles={aiProfiles}
+          setProfiles={setAiProfiles}
+          showToast={showToast}
+        />
 
     </div>
   );

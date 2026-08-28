@@ -1,0 +1,823 @@
+import os
+
+content = """import React, { useEffect, useRef, useState } from 'react';
+import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
+import { vim, Vim, getCM } from '@replit/codemirror-vim';
+import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
+import { javascript } from '@codemirror/lang-javascript';
+import { python } from '@codemirror/lang-python';
+import { EditorView, keymap } from '@codemirror/view';
+import { Prec } from '@codemirror/state';
+import { insertTab } from '@codemirror/commands';
+import { foldService, foldCode, unfoldCode } from '@codemirror/language';
+import { VimMode, FileFormat } from '../types';
+import { Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
+import { renderRichPreviewContent } from '../utils/previewRenderer';
+
+interface VimEditorProps {
+  content: string;
+  setContent: (text: string) => void;
+  format: FileFormat;
+  filename: string;
+  theme: 'light' | 'dark' | 'system';
+  fileSessionId: number;
+  onSyncClipboard: (yankText: string) => void;
+  externalClipboardText: () => Promise<string>;
+  showLineNumbers: boolean;
+  wordWrap: boolean;
+  editorFontSize: number;
+  setEditorFontSize?: (val: number) => void;
+  syntaxHighlightOn: boolean;
+  onSaveFileState: (name: string, content: string) => void;
+  onReadFileState: (name: string) => string | null;
+  onOpenFileState?: (targetName: string) => { found: boolean; name: string };
+  onShowHelp?: (topic?: string) => void;
+  lang?: 'it' | 'en';
+  setLang?: (lang: 'it' | 'en') => void;
+  onOpenGoogleDocsModal?: () => void;
+  onOpenSettingsModal?: () => void;
+  onModeChange?: (mode: VimMode) => void;
+  isSoftKeyboardOpen?: boolean;
+  onSoftKeyboardChange?: (isOpen: boolean) => void;
+}
+
+export function VimEditor({
+  content,
+  setContent,
+  format,
+  filename,
+  theme,
+  fileSessionId,
+  onSyncClipboard,
+  externalClipboardText,
+  showLineNumbers,
+  wordWrap,
+  editorFontSize,
+  setEditorFontSize,
+  syntaxHighlightOn,
+  onSaveFileState,
+  onReadFileState,
+  onOpenFileState,
+  onShowHelp,
+  lang = 'en',
+  setLang,
+  onOpenGoogleDocsModal,
+  onOpenSettingsModal,
+  onModeChange,
+  isSoftKeyboardOpen,
+  onSoftKeyboardChange
+}: VimEditorProps) {
+  const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const isInsertModeRef = useRef(false);
+  const [showModeMenu, setShowModeMenu] = useState(false);
+  const [showTableMenu, setShowTableMenu] = useState(false);
+  const [showImageMenu, setShowImageMenu] = useState(false);
+
+  const fileInputRefTemp = useRef<HTMLInputElement>(null);
+  const fileInputRefBase64 = useRef<HTMLInputElement>(null);
+
+  const insertAtCursor = (text: string, offset?: number) => {
+    if (!editorRef.current?.view) return;
+    const view = editorRef.current.view;
+    const pos = view.state.selection.main.head;
+    view.dispatch({
+        changes: { from: pos, to: pos, insert: text },
+        selection: { anchor: pos + (offset !== undefined ? offset : text.length) }
+    });
+    view.contentDOM.focus();
+  };
+
+  const appendToBottom = (text: string) => {
+    if (!editorRef.current?.view) return;
+    const view = editorRef.current.view;
+    const end = view.state.doc.length;
+    view.dispatch({
+        changes: { from: end, to: end, insert: text }
+    });
+  };
+
+  const [currentMode, setCurrentMode] = useState<VimMode>('normal');
+  const [isTouchDevice, setIsTouchDevice] = useState(false);
+
+  useEffect(() => {
+    setIsTouchDevice(('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || ''));
+  }, []);
+
+  const vimModesList: { key: VimMode; label: string; shortcut: string; descIt: string; descEn: string }[] = [
+    { key: 'normal', label: 'NORMAL', shortcut: 'Esc', descIt: 'Comandi e movimenti Vim', descEn: 'Vim navigation & commands' },
+    { key: 'insert', label: 'INSERT', shortcut: 'i', descIt: 'Scrittura e digitazione testo', descEn: 'Text typing & editing' },
+    { key: 'visual', label: 'VISUAL', shortcut: 'v', descIt: 'Selezione per caratteri', descEn: 'Character-wise selection' },
+    { key: 'visual-line', label: 'V-LINE', shortcut: 'V', descIt: 'Selezione intere righe', descEn: 'Line-wise selection' },
+  ];
+
+  const handleSelectMode = (newMode: VimMode) => {
+    setShowModeMenu(false);
+    if (!editorRef.current?.view) return;
+    const cm = getCM(editorRef.current.view);
+    if (!cm || !Vim) return;
+
+    // 1. Reset sicuro dello stato
+    Vim.handleKey(cm, '<Esc>', 'mapping');
+
+    if (newMode === 'normal') return;
+
+    // 2. Transizione di stato sincrona
+    let key = '';
+    if (newMode === 'insert') key = 'i';
+    if (newMode === 'visual') key = 'v';
+    if (newMode === 'visual-line') key = 'V';
+    
+    if (key) {
+      Vim.handleKey(cm, key, 'mapping');
+    }
+    // Nessun trigger di focus() sul DOM: questo evita l'apertura forzata della Gboard.
+  };
+
+  const [showPreview, setShowPreview] = useState(false);
+  const [isPreviewFullScreen, setIsPreviewFullScreen] = useState(false);
+  const [isMasterCopied, setIsMasterCopied] = useState(false);
+
+  const handleMasterCopy = () => {
+    navigator.clipboard.writeText(content);
+    setIsMasterCopied(true);
+    setTimeout(() => setIsMasterCopied(false), 2000);
+  };
+
+  const [previewZoom, setPreviewZoom] = useState(100);
+  const [statusMessage, setStatusMessage] = useState(
+    lang === 'it' ? 'Benvenuto in LiViA. Premi "i" per scrivere, o :h per la guida.' : 'Welcome to LiViA. Press "i" to write, or :h for help.'
+  );
+
+  const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+
+  const customFoldService = foldService.of((state, lineStart, lineEnd) => {
+    const doc = state.doc;
+    const line = doc.lineAt(lineStart);
+    const text = line.text;
+    const trimmed = text.trim();
+    
+    const latexLevels = ['chapter', 'section', 'subsection', 'subsubsection', 'paragraph', 'subparagraph'];
+    
+    // 1. \begin ... \end
+    const beginMatch = trimmed.match(/^\\\\begin\\{([^}]+)\\}/);
+    if (beginMatch) {
+      const envName = beginMatch[1];
+      let endLine = line.number;
+      let depth = 1;
+      for (let i = line.number + 1; i <= doc.lines; i++) {
+        const lText = doc.line(i).text.trim();
+        if (lText.startsWith(`\\\\begin{${envName}}`)) depth++;
+        if (lText.startsWith(`\\\\end{${envName}}`)) depth--;
+        endLine = i;
+        if (depth === 0) break;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+
+    // 2. LaTeX Headings
+    const headingMatch = trimmed.match(/^\\\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
+    if (headingMatch) {
+      const levelIdx = latexLevels.indexOf(headingMatch[1]);
+      let endLine = line.number;
+      for (let i = line.number + 1; i <= doc.lines; i++) {
+        const lText = doc.line(i).text.trim();
+        const nextHeadingMatch = lText.match(/^\\\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
+        if (nextHeadingMatch) {
+          const nextLevelIdx = latexLevels.indexOf(nextHeadingMatch[1]);
+          if (nextLevelIdx <= levelIdx) break;
+        }
+        endLine = i;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+    
+    // 3. Markdown headings
+    const mdMatch = trimmed.match(/^(#+)\\s/);
+    if (mdMatch) {
+       const level = mdMatch[1].length;
+       let endLine = line.number;
+       for (let i = line.number + 1; i <= doc.lines; i++) {
+         const lText = doc.line(i).text.trim();
+         const nextMdMatch = lText.match(/^(#+)\\s/);
+         if (nextMdMatch && nextMdMatch[1].length <= level) break;
+         endLine = i;
+       }
+       if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+    
+    // 4. Code Blocks (def/class/function)
+    const isCodeHeading = /^(def |class |function |\\{)/.test(trimmed);
+    if (isCodeHeading) {
+      let endLine = line.number;
+      for (let i = line.number + 1; i <= doc.lines; i++) {
+        if (/^(def |class |function |\\}|\\\\})/.test(doc.line(i).text.trim())) break;
+        endLine = i;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+    
+    // 5. Indent-based folding fallback
+    if (trimmed.length > 0) {
+      const indent = text.search(/\\S/);
+      if (indent >= 0) {
+        let nextLineIndent = -1;
+        let nextLineNum = line.number + 1;
+        while (nextLineNum <= doc.lines) {
+          const nextText = doc.line(nextLineNum).text;
+          if (nextText.trim().length > 0) {
+            nextLineIndent = nextText.search(/\\S/);
+            break;
+          }
+          nextLineNum++;
+        }
+
+        if (nextLineIndent > indent) {
+          let endLine = nextLineNum;
+          for (let i = nextLineNum + 1; i <= doc.lines; i++) {
+            const lText = doc.line(i).text;
+            if (lText.trim().length > 0) {
+              if (lText.search(/\\S/) <= indent) break;
+            }
+            endLine = i;
+          }
+          return { from: line.to, to: doc.line(endLine).to };
+        }
+      }
+    }
+    
+    return null;
+  });
+
+  const extensions = [
+    vim({ status: true }),
+    
+    EditorView.contentAttributes.of({
+      inputmode: (isSoftKeyboardOpen === false) ? 'none' : 'text',
+    }),
+
+    EditorView.theme({
+      "&": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-content": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-scroller": {
+        fontFamily: 'var(--font-mono)'
+      },
+      ".cm-tooltip": {
+        fontFamily: 'var(--font-mono)'
+      }
+    }),
+
+    EditorView.updateListener.of((update) => {
+      if (update.selectionSet || update.docChanged) {
+        const head = update.state.selection.main.head;
+        const line = update.state.doc.lineAt(head);
+        setCursorPos({ line: line.number, col: head - line.from + 1 });
+      }
+    }),
+
+    customFoldService,
+
+    Prec.highest(keymap.of([{
+       key: 'Tab',
+       run: (view) => {
+        const cm = (view as any).cm;
+        const isInsert = cm?.state?.vim?.insertMode || false;
+        if (!isInsert) return false;
+        
+        // Handle Tab character properly via CodeMirror command
+        insertTab(view);
+        return true;
+      }
+    }]))
+  ];
+
+  if (syntaxHighlightOn) {
+    if (format === 'md') extensions.push(markdown({ base: markdownLanguage }));
+    if (format === 'js' || format === 'ts') extensions.push(javascript());
+    if (format === 'py') extensions.push(python());
+  }
+
+  if (wordWrap) {
+    extensions.push(EditorView.lineWrapping);
+  }
+
+  // Handle Tab key overriding CodeMirror defaults in Insert mode
+  // The `vim` extension handles Insert mode keymaps, so we let CodeMirror's basicSetup or custom extension handle it.
+
+  useEffect(() => {
+    // Custom Vim commands mapping
+    Vim.defineAction('fold', (cm) => {
+       if (editorRef.current?.view) foldCode(editorRef.current.view);
+    });
+    Vim.defineAction('unfold', (cm) => {
+       if (editorRef.current?.view) unfoldCode(editorRef.current.view);
+    });
+
+    Vim.mapCommand('zc', 'action', 'fold', {}, {});
+    Vim.mapCommand('zo', 'action', 'unfold', {}, {});
+    
+    Vim.defineEx('write', 'w', () => {
+      onSaveFileState(filename, content);
+      setStatusMessage(lang === 'it' ? `"${filename}" salvato.` : `"${filename}" written.`);
+    });
+    
+    Vim.defineEx('help', 'h', (cm: any, params: any) => {
+      if (onShowHelp) onShowHelp(params?.args?.[0]);
+    });
+  }, [filename, content, lang, onSaveFileState, onShowHelp]);
+
+  useEffect(() => {
+    if (editorRef.current?.view && isSoftKeyboardOpen) {
+      // Re-focus when keyboard is toggled on to trigger the system keyboard popup
+      editorRef.current.view.contentDOM.focus();
+    }
+  }, [isSoftKeyboardOpen]);
+
+  // Track Vim mode
+  useEffect(() => {
+    const handleVimMode = (e: any) => {
+      let m: VimMode = 'normal';
+      if (e.mode === 'insert') {
+        m = 'insert';
+        isInsertModeRef.current = true;
+      } else {
+        isInsertModeRef.current = false;
+      }
+      if (e.mode === 'visual') {
+        if (e.subMode === 'linewise') m = 'visual-line';
+        else m = 'visual';
+      }
+
+      if (onModeChange) onModeChange(m);
+      setCurrentMode(m);
+      setStatusMessage(`-- ${m.toUpperCase()} MODE --`);
+    };
+    
+    const view = editorRef.current?.view;
+    if (view) {
+       const cm = getCM(view);
+       if (cm && (cm as any).on) {
+          (cm as any).on('vim-mode-change', handleVimMode);
+          return () => (cm as any).off('vim-mode-change', handleVimMode);
+       }
+    }
+  }, [editorRef.current?.view, onModeChange]);
+
+  return (
+    <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] text-gray-900 dark:text-[#E0E0E0] transition-colors duration-200 min-w-0 min-h-0 overflow-hidden">
+      
+      {/* Header Bar */}
+      <div className="bg-gray-50 dark:bg-[#16181D] px-4 py-3 sm:px-4 sm:py-2 flex flex-wrap justify-between items-center gap-2 text-lg sm:text-xs text-gray-500 dark:text-zinc-400 border-b border-gray-200 dark:border-[#2D2D2D] font-sans">
+        {showPreview && isPreviewFullScreen ? (
+          /* PREVIEW FULLSCREEN REPLACEMENT TOOLBAR */
+          <>
+            <div className="flex items-center gap-2 sm:gap-3">
+              <span className="flex items-center gap-1.5 font-bold text-gray-800 dark:text-zinc-100 font-sans text-sm sm:text-xs uppercase">
+                <Sparkles size={16} className="text-[#8AB4F8]" />
+                {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
+              </span>
+              <span className="text-[10px] font-sans px-2 py-0.5 rounded bg-gray-200/80 dark:bg-zinc-800 text-gray-700 dark:text-zinc-300 font-semibold">
+                {lang === 'it' ? "Solo Lettura" : "Read Only"}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2 font-sans">
+              {/* Dedicated Preview Zoom Regulator */}
+              <div className="flex items-center gap-0.5 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 shadow-xs">
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(Math.max(50, previewZoom - 10))}
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Riduci zoom anteprima (-)' : 'Zoom out preview (-)'}
+                >
+                  <ZoomOut size={16} className="sm:size-[13px]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(100)}
+                  className="px-2 py-0.5 text-xs sm:text-[11px] font-mono font-bold text-gray-700 dark:text-zinc-200 hover:text-blue-500 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Ripristina zoom 100%' : 'Reset zoom to 100%'}
+                >
+                  {previewZoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPreviewZoom(Math.min(250, previewZoom + 10))}
+                  className="px-2.5 py-1.5 sm:p-1 text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                  title={lang === 'it' ? 'Aumenta zoom anteprima (+)' : 'Zoom in preview (+)'}
+                >
+                  <ZoomIn size={16} className="sm:size-[13px]" />
+                </button>
+              </div>
+
+              {/* Split View Toggle */}
+              <button
+                type="button"
+                onClick={() => setIsPreviewFullScreen(false)}
+                className="flex items-center gap-1.5 px-3 py-2 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg text-sm sm:text-xs font-bold border transition-all cursor-pointer bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/40 dark:text-[#8AB4F8] dark:border-blue-900 shadow-xs"
+                title={lang === 'it' ? 'Torna a vista affiancata' : 'Switch to split view'}
+              >
+                <Minimize2 size={16} className="sm:size-[13px]" />
+                <span>{lang === 'it' ? 'Vista Affiancata' : 'Split View'}</span>
+              </button>
+
+              {/* Close Preview Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPreview(false);
+                  setIsPreviewFullScreen(false);
+                }}
+                className="p-2 sm:p-1.5 text-gray-500 hover:text-red-600 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800 rounded-xl sm:rounded-lg transition-colors cursor-pointer"
+                title={lang === 'it' ? 'Chiudi anteprima' : 'Close preview'}
+              >
+                <X size={20} className="sm:size-[16px]" />
+              </button>
+            </div>
+          </>
+        ) : (
+          /* STANDARD EDITING TOOLBAR */
+          <>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-gray-800 dark:text-zinc-200 font-bold truncate max-w-[200px] text-base sm:text-xs">
+                {filename}
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              
+              {/* Table & Image Inserts (MD/DOCX only) */}
+              {(format === 'md' || format === 'docx') && (
+                <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 mr-1 relative">
+                  
+                  {/* Table Dropdown */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => { setShowTableMenu(!showTableMenu); setShowImageMenu(false); }}
+                      className={`p-1.5 sm:p-1 rounded-lg transition-colors ${showTableMenu ? 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'}`}
+                      title={lang === 'it' ? 'Inserisci Tabella' : 'Insert Table'}
+                    >
+                      <Table size={20} className="sm:size-[14px]" />
+                    </button>
+                    {showTableMenu && (
+                      <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg shadow-xl z-50 overflow-hidden font-sans">
+                        <button onClick={() => { insertAtCursor(`\\n| Colonna 1 | Colonna 2 |\\n|---|---|\\n| Dato 1 | Dato 2 |\\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Semplice (2x2)</button>
+                        <button onClick={() => { insertAtCursor(`\\n| Colonna 1 | Colonna 2 | Colonna 3 |\\n|---|---|---|\\n| Dato 1 | Dato 2 | Dato 3 |\\n| Dato 4 | Dato 5 | Dato 6 |\\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Media (3x3)</button>
+                        <button onClick={() => { insertAtCursor(`\\n| Allineata a Sinistra | Centrata | Allineata a Destra |\\n| :--- | :---: | ---: |\\n| Testo | Testo | Testo |\\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella con Allineamenti</button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Image Dropdown */}
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={() => { setShowImageMenu(!showImageMenu); setShowTableMenu(false); }}
+                      className={`p-1.5 sm:p-1 rounded-lg transition-colors ${showImageMenu ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400' : 'text-gray-500 hover:text-gray-900 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'}`}
+                      title={lang === 'it' ? 'Inserisci Immagine' : 'Insert Image'}
+                    >
+                      <ImageIcon size={20} className="sm:size-[14px]" />
+                    </button>
+                    {showImageMenu && (
+                      <div className="absolute top-full right-0 mt-1 w-64 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg shadow-xl z-50 overflow-hidden font-sans flex flex-col">
+                            <button onClick={() => { 
+                               fileInputRefTemp.current?.click();
+                              setShowImageMenu(false);
+                            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300 flex items-center gap-2">
+                              <FilePlus size={12} className="text-emerald-500" /> {lang === 'it' ? 'File Locale (Rapido/Temporaneo Blob)' : 'Local File (Quick/Temp Blob)'}
+                            </button>
+                            <button onClick={() => { 
+                               fileInputRefBase64.current?.click();
+                              setShowImageMenu(false);
+                            }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300 flex items-center gap-2">
+                              <HardDrive size={12} className="text-amber-500" /> {lang === 'it' ? 'File Locale (Incorporato Base64)' : 'Local File (Embedded Base64)'}
+                            </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Font Size Adjusters (A- / A+) */}
+              {setEditorFontSize && (
+                <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-xl sm:rounded-lg p-0.5 sm:p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.max(12, editorFontSize - 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Riduci dimensione testo' : 'Decrease text size'}
+                  >
+                    A-
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const sizes = [12, 14, 18, 24, 30, 32, 36, 40, 48];
+                      const currentIdx = sizes.indexOf(editorFontSize);
+                      const nextSize = sizes[(currentIdx + 1) % sizes.length];
+                      setEditorFontSize(nextSize);
+                    }}
+                    className="text-xs sm:text-sm sm:text-[10px] font-mono px-2 sm:px-1 font-bold text-gray-700 dark:text-zinc-300 hover:text-blue-500 cursor-pointer"
+                    title={lang === 'it' ? 'Tocca per scorrere dimensioni (12, 14, 18, 24, 30, 32, 36, 40, 48px)' : 'Tap to cycle preset font sizes'}
+                  >
+                    {editorFontSize}px
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorFontSize(Math.min(48, editorFontSize + 2))}
+                    className="px-4 py-3 min-h-[48px] sm:min-h-0 sm:px-1.5 sm:py-0.5 text-lg sm:text-xs font-black text-gray-700 dark:text-zinc-200 hover:bg-gray-100 dark:hover:bg-zinc-800 rounded transition-colors cursor-pointer"
+                    title={lang === 'it' ? 'Aumenta dimensione testo fino a 48px' : 'Increase text size up to 48px'}
+                  >
+                    A+
+                  </button>
+                </div>
+              )}
+
+              <button
+                onClick={() => setShowPreview(!showPreview)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg font-bold transition-all shadow-xs active:scale-95 cursor-pointer text-sm sm:text-[10px] uppercase tracking-wide border ${
+                  showPreview 
+                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-800/50 dark:text-emerald-400 hover:bg-emerald-100' 
+                    : 'bg-white dark:bg-[#0D0F12] text-gray-600 dark:text-zinc-400 border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800 hover:text-gray-900 dark:hover:text-zinc-200'
+                }`}
+                title={lang === 'it' ? "Affianca anteprima ad albero" : "Side-by-side preview"}
+                id="toggle-preview-btn"
+              >
+                {showPreview ? <Edit3 size={24} className="sm:size-[13px]" /> : <Eye size={24} className="sm:size-[13px]" />}
+                <span className="hidden sm:inline">{showPreview ? (lang === 'it' ? "Chiudi Anteprima" : "Close Preview") : (lang === 'it' ? "Anteprima" : "Preview")}</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="flex-1 flex overflow-hidden min-h-0 min-w-0">
+        <div className={`flex-1 flex relative overflow-hidden bg-gray-50 dark:bg-[#16181D] transition-colors duration-200 min-w-0 min-h-0 ${
+          showPreview ? (isPreviewFullScreen ? 'hidden' : 'hidden lg:flex border-r border-gray-200 dark:border-[#1E2127]') : ''
+        }`}>
+          <div className="flex-1 overflow-auto" style={{ fontSize: `${editorFontSize}px` }}>
+            <CodeMirror
+              ref={editorRef}
+              value={content}
+              height="100%"
+              theme={
+                theme === 'dark' 
+                  ? 'dark' 
+                  : theme === 'light' 
+                    ? 'light' 
+                    : (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+              }
+              extensions={extensions}
+              basicSetup={{
+                lineNumbers: showLineNumbers,
+                foldGutter: true,
+                highlightActiveLine: false,
+                highlightSelectionMatches: true,
+              }}
+              onChange={(val) => setContent(val)}
+              className="h-full"
+            />
+          </div>
+        </div>
+
+        {/* Live Formatted Markdown & XML Rich Preview Pane */}
+        {(showPreview) && (
+          <div className="flex-1 bg-gray-50 dark:bg-[#0D0F12] p-4 sm:p-6 font-mono text-xs overflow-y-auto leading-6 select-text border-l border-gray-200 dark:border-[#1E2127] transition-colors duration-200"
+               style={{ fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace' }}>
+            
+            {!isPreviewFullScreen && (
+              <div className="flex flex-wrap justify-between items-center border-b border-gray-200 dark:border-[#2D2D2D] pb-3 mb-4 gap-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-gray-700 dark:text-zinc-200 uppercase flex items-center gap-1.5 font-sans">
+                    <Sparkles size={13} className="text-[#8AB4F8]" /> {lang === 'it' ? "Anteprima Formattata" : "Formatted Preview"} ({format.toUpperCase()})
+                  </span>
+                  <span className="text-[10px] font-sans px-1.5 py-0.5 rounded bg-gray-200/60 dark:bg-zinc-800 text-gray-600 dark:text-zinc-400">
+                    {lang === 'it' ? "Solo Lettura" : "Read Only"}
+                  </span>
+                </div>
+
+                {/* Preview Zoom & Fullscreen Controls */}
+                <div className="flex items-center gap-1.5 font-sans">
+                  <div className="flex items-center gap-0.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg p-0.5 shadow-xs">
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(Math.max(50, previewZoom - 10))}
+                      className="p-1 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      <ZoomOut size={13} />
+                    </button>
+                    <span className="text-[9px] font-mono font-bold px-1 py-0.5 w-9 text-center text-gray-600 dark:text-zinc-400">
+                      {previewZoom}%
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setPreviewZoom(Math.min(200, previewZoom + 10))}
+                      className="p-1 text-gray-500 hover:text-gray-900 dark:hover:text-white rounded hover:bg-gray-100 dark:hover:bg-zinc-800 transition-colors"
+                    >
+                      <ZoomIn size={13} />
+                    </button>
+                  </div>
+                  
+                  <button
+                    type="button"
+                    onClick={() => setIsPreviewFullScreen(true)}
+                    className="p-1.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] text-gray-600 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all flex items-center justify-center shadow-xs"
+                    title="A tutto schermo"
+                  >
+                    <Maximize2 size={13} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview(false)}
+                    className="p-1.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] text-gray-600 hover:text-red-600 dark:text-zinc-400 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/30 transition-all flex items-center justify-center shadow-xs ml-1"
+                    title="Chiudi anteprima"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
+              {renderRichPreviewContent(content, format, theme)}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Hidden elements for auxiliary keyboard to trigger keys in CodeMirror */}
+      <div className="hidden">
+        <button
+          id="simulated-key-trigger"
+          onClick={(e) => {
+             let key = e.currentTarget.getAttribute('data-key');
+             if (key && editorRef.current?.view) {
+                const cm = getCM(editorRef.current.view);
+                if (key === 'Escape') key = '<Esc>';
+                if (cm && Vim) {
+                   Vim.handleKey(cm, key, 'mapping');
+                }
+             }
+          }}
+        />
+        <button
+          id="simulated-snippet-trigger"
+          onClick={(e) => {
+             const text = e.currentTarget.getAttribute('data-text');
+             const offsetStr = e.currentTarget.getAttribute('data-offset');
+             if (text && editorRef.current?.view) {
+                const view = editorRef.current.view;
+                const pos = view.state.selection.main.head;
+                view.dispatch({
+                   changes: { from: pos, to: pos, insert: text },
+                   selection: { anchor: pos + text.length + (offsetStr ? parseInt(offsetStr) : 0) }
+                });
+             }
+          }}
+        />
+      </div>
+      
+          {/* Mode Selection Popover Menu */}
+          {showModeMenu && (
+            <>
+              <div className="fixed inset-0 z-40 bg-black/10 dark:bg-black/40" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowModeMenu(false); }} />
+              <div className="absolute bottom-6 left-0 z-50 min-w-[210px] bg-white dark:bg-[#1E2127] border border-gray-200 dark:border-[#2C313C] rounded-lg shadow-2xl py-1 text-gray-800 dark:text-[#ABB2BF] text-xs font-sans normal-case animate-in fade-in slide-in-from-bottom-2 duration-150" id="footer-mode-dropdown-menu">
+                <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-gray-400 dark:text-zinc-500 tracking-wider border-b border-gray-100 dark:border-[#2C313C] flex items-center justify-between">
+                  <span>{lang === 'it' ? 'Cambia Modalità' : 'Switch Mode'}</span>
+                  <span className="text-[9px] font-mono text-emerald-600 dark:text-[#8AB4F8]">Vim</span>
+                </div>
+                <div className="py-1">
+                  {vimModesList.map((m) => {
+                    const isSelected = currentMode === m.key;
+                    return (
+                      <button
+                        key={m.key}
+                        type="button"
+                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleSelectMode(m.key); }}
+                        className={`w-full px-3 py-2 flex items-center justify-between text-left hover:bg-emerald-50 dark:hover:bg-[#2C313C] cursor-pointer transition-colors ${isSelected ? 'text-emerald-700 dark:text-[#8AB4F8] font-bold bg-emerald-50/80 dark:bg-[#2C313C]/80' : 'text-gray-700 dark:text-zinc-300'}`}
+                      >
+                        <div className="flex flex-col">
+                          <span className="font-mono text-xs font-bold tracking-wide flex items-center gap-1.5">
+                            {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 dark:bg-[#8AB4F8]"></span>}
+                            {m.label}
+                          </span>
+                          <span className="text-[10px] text-gray-500 dark:text-zinc-400 font-normal">
+                            {lang === 'it' ? m.descIt : m.descEn}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-mono font-semibold text-gray-500 dark:text-zinc-400 bg-gray-100 dark:bg-[#0D0F12] border border-gray-200 dark:border-[#3E4451] px-1.5 py-0.5 rounded ml-2">
+                          {m.shortcut}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+
+      <footer className="relative bg-emerald-600 dark:bg-[#21252B] h-6 flex text-[10px] items-center text-white dark:text-[#9DA5B4] font-sans font-medium tracking-wide uppercase shrink-0 w-full overflow-x-auto overflow-y-hidden transition-colors duration-200">
+        <div className="relative flex items-center h-full px-2">
+          {/* Direct Tap Mode Selector Button */}
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowModeMenu(prev => !prev); }}
+            className="bg-white/20 hover:bg-white/30 active:bg-white/40 dark:bg-[#0D0F12] dark:hover:bg-[#1E2127] text-white dark:text-[#8AB4F8] px-2 h-[18px] my-auto flex items-center gap-1 rounded tracking-wider font-mono cursor-pointer transition-all border border-white/25 dark:border-[#8AB4F8]/40 shadow-xs mr-1.5"
+            title={lang === 'it' ? 'Tocca per cambiare modalità (NORMAL, INSERT, VISUAL, V-LINE)' : 'Tap to switch mode (NORMAL, INSERT, VISUAL, V-LINE)'}
+            id="footer-mode-selector-btn"
+          >
+            <span>{currentMode === 'normal' ? 'NORMAL' : currentMode === 'visual' ? 'VISUAL' : currentMode === 'visual-line' ? 'V-LINE' : currentMode.toUpperCase()}</span>
+            <ChevronUp size={11} className={`transition-transform duration-200 ${showModeMenu ? 'rotate-180' : ''}`} />
+          </button>
+          
+          {/* Gboard Soft Keyboard Status & Toggle Indicator - only on touch/mobile */}
+          {isTouchDevice && onSoftKeyboardChange && (
+            <button
+              type="button"
+              onClick={() => onSoftKeyboardChange(!isSoftKeyboardOpen)}
+              className={`h-[18px] px-1.5 my-auto flex items-center gap-1 rounded font-bold font-mono cursor-pointer transition-all border shadow-xs ${
+                isSoftKeyboardOpen
+                  ? 'bg-white text-emerald-700 dark:bg-[#0D0F12] dark:text-[#8AB4F8] border-white/60 dark:border-[#8AB4F8]'
+                  : 'bg-indigo-100 hover:bg-indigo-200 text-indigo-700 dark:bg-indigo-900/40 dark:hover:bg-indigo-800/60 dark:text-indigo-400 border-transparent'
+              }`}
+              title={
+                isSoftKeyboardOpen
+                  ? (lang === 'it' ? 'Tastiera Gboard attiva: tocca per nascondere' : 'Gboard keyboard active: tap to hide')
+                  : (lang === 'it' ? 'Tastiera Gboard nascosta: tocca per aprire' : 'Gboard keyboard hidden: tap to open')
+              }
+              id="footer-gboard-toggle-btn"
+            >
+              <Keyboard size={10} />
+              <span className="hidden xs:inline">
+                {isSoftKeyboardOpen ? 'ON' : 'OFF'}
+              </span>
+            </button>
+          )}
+        </div>
+
+        <div className="px-2 text-white dark:text-[#0D0F12] font-semibold tracking-tight truncate hidden sm:block min-w-0">
+          {filename}
+        </div>
+        
+        <div className="flex-1 text-white/80 dark:text-zinc-800 italic text-[11px] lowercase normal-case px-2.5 truncate min-w-0">
+          {statusMessage}
+        </div>
+        
+        <div className="px-2 font-mono tabular-nums">Ln {cursorPos.line}, Col {cursorPos.col}</div>
+        <div className="px-2 hidden sm:block font-mono">UTF-8</div>
+        <div className="px-2 font-mono">{format}</div>
+
+      {/* Hidden File Inputs for Image Upload */}
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRefTemp} 
+        className="hidden" 
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const url = URL.createObjectURL(file);
+            insertAtCursor(`![${file.name}](${url})`);
+          }
+          if (fileInputRefTemp.current) fileInputRefTemp.current.value = '';
+          setShowImageMenu(false);
+        }}
+       />
+      <input 
+        type="file" 
+        accept="image/*" 
+        ref={fileInputRefBase64} 
+        className="hidden" 
+        style={{ display: 'none' }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const base64 = reader.result as string;
+              const refName = `img-${Date.now()}`;
+              insertAtCursor(`![${file.name}][${refName}]`);
+              appendToBottom(`\n\n[${refName}]: ${base64}`);
+            };
+            reader.readAsDataURL(file);
+          }
+          if (fileInputRefBase64.current) fileInputRefBase64.current.value = '';
+          setShowImageMenu(false);
+        }}
+       />
+      </footer>
+    </div>
+  );
+}
+"""
+
+with open("src/components/VimEditor.tsx", "w") as f:
+    f.write(content)
+
+print("VimEditor written successfully!")
