@@ -324,6 +324,26 @@ export function VimEditor({
 
   useEffect(() => {
     // Custom Vim commands mapping
+    
+    // Monkey-patch findKey to allow `ng` instead of `ngg` (jump to line n)
+    // We only do this once to avoid infinite wrapping.
+    if (!(Vim as any)._liviaFindKeyPatched) {
+      const origFindKey = Vim.findKey;
+      Vim.findKey = function(cm_: any, key: string, origin: string) {
+        if (key === 'g' && cm_?.state?.vim?.inputState) {
+          const is = cm_.state.vim.inputState;
+          if (is.keyBuffer && is.keyBuffer.length > 0) {
+            const lastKey = is.keyBuffer[is.keyBuffer.length - 1];
+            if (/^[0-9]$/.test(lastKey)) {
+              key = 'G';
+            }
+          }
+        }
+        return origFindKey.call(this, cm_, key, origin);
+      };
+      (Vim as any)._liviaFindKeyPatched = true;
+    }
+
     Vim.defineAction('fold', (cm) => {
        if (editorRef.current?.view) foldCode(editorRef.current.view);
     });
@@ -611,11 +631,11 @@ export function VimEditor({
       if (onAiCommand) {
         const isSelection = cm.somethingSelected();
         const onInsert = (newText: string) => {
-           if (isSelection) cm.replaceSelection(newText);
-           else {
-             const doc = cm.getDoc();
-             const cursor = doc.getCursor();
-             doc.replaceRange(newText + '\n', cursor);
+           if (isSelection) {
+             cm.replaceSelection(newText);
+           } else {
+             // cm.replaceSelection without a selection will insert at the current cursor position
+             cm.replaceSelection(newText + '\n');
            }
         };
         onAiCommand('latin', arg, '', isSelection, onInsert);
@@ -623,12 +643,7 @@ export function VimEditor({
     });
   }, [filename, content, lang, onSaveFileState, onShowHelp, onAiCommand]);
 
-  useEffect(() => {
-    if (editorRef.current?.view && isSoftKeyboardOpen) {
-      // Re-focus when keyboard is toggled on to trigger the system keyboard popup
-      editorRef.current.view.contentDOM.focus();
-    }
-  }, [isSoftKeyboardOpen]);
+
 
   // Track Vim mode
   useEffect(() => {
@@ -714,7 +729,7 @@ export function VimEditor({
               <button
                 type="button"
                 onClick={() => setIsPreviewFullScreen(false)}
-                className="flex items-center gap-1.5 px-3 py-2 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg text-sm sm:text-xs font-bold border transition-all cursor-pointer bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/40 dark:text-[#8AB4F8] dark:border-blue-900 shadow-xs"
+                className="hidden lg:flex items-center gap-1.5 px-3 py-2 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg text-sm sm:text-xs font-bold border transition-all cursor-pointer bg-blue-50 text-blue-800 border-blue-200 dark:bg-blue-950/40 dark:text-[#8AB4F8] dark:border-blue-900 shadow-xs"
                 title={lang === 'it' ? 'Torna a vista affiancata' : 'Switch to split view'}
               >
                 <Minimize2 size={16} className="sm:size-[13px]" />
@@ -852,7 +867,18 @@ export function VimEditor({
               )}
 
               <button
-                onClick={() => setShowPreview(!showPreview)}
+                onClick={() => {
+                  const willShow = !showPreview;
+                  setShowPreview(willShow);
+                  if (willShow) {
+                    // Se siamo su schermi piccoli (< 1024px, lg breakpoint Tailwind), attiva automaticamente il full screen
+                    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+                      setIsPreviewFullScreen(true);
+                    }
+                  } else {
+                    setIsPreviewFullScreen(false);
+                  }
+                }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg font-bold transition-all shadow-xs active:scale-95 cursor-pointer text-sm sm:text-[10px] uppercase tracking-wide border ${
                   showPreview 
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-900/30 dark:border-emerald-800/50 dark:text-emerald-400 hover:bg-emerald-100' 
@@ -864,6 +890,49 @@ export function VimEditor({
                 {showPreview ? <Edit3 size={24} className="sm:size-[13px]" /> : <Eye size={24} className="sm:size-[13px]" />}
                 <span className="hidden sm:inline">{showPreview ? (lang === 'it' ? "Chiudi Anteprima" : "Close Preview") : (lang === 'it' ? "Anteprima" : "Preview")}</span>
               </button>
+
+              {/* Gboard Soft Keyboard Status & Toggle Indicator - moved to top right */}
+              {isTouchDevice && onSoftKeyboardChange && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const nextState = !isSoftKeyboardOpen;
+                    onSoftKeyboardChange(nextState);
+                    
+                    // Call focus/blur synchronously within the user event handler
+                    // This is strictly required by iOS/Android to show the keyboard reliably.
+                    // We also MUST set inputmode synchronously on the DOM node before calling focus,
+                    // otherwise the browser will see inputmode="none" during the focus event and suppress the keyboard.
+                    if (editorRef.current?.view) {
+                      if (nextState) {
+                        editorRef.current.view.contentDOM.setAttribute('inputmode', 'text');
+                        editorRef.current.view.contentDOM.focus();
+                      } else {
+                        editorRef.current.view.contentDOM.setAttribute('inputmode', 'none');
+                        editorRef.current.view.contentDOM.blur();
+                      }
+                    }
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 sm:px-2.5 sm:py-1 rounded-xl sm:rounded-lg font-bold transition-all shadow-xs cursor-pointer text-sm sm:text-[10px] uppercase tracking-wide border ${
+                    isSoftKeyboardOpen
+                      ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-900/30 dark:border-blue-800/50 dark:text-blue-400 hover:bg-blue-100'
+                      : 'bg-white dark:bg-[#0D0F12] text-gray-600 dark:text-zinc-400 border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800 hover:text-gray-900 dark:hover:text-zinc-200'
+                  }`}
+                  title={
+                    isSoftKeyboardOpen
+                      ? (lang === 'it' ? 'Tastiera Gboard attiva: tocca per nascondere' : 'Gboard keyboard active: tap to hide')
+                      : (lang === 'it' ? 'Tastiera Gboard nascosta: tocca per aprire' : 'Gboard keyboard hidden: tap to open')
+                  }
+                  id="header-gboard-toggle-btn"
+                >
+                  <Keyboard size={24} className="sm:size-[13px]" />
+                  <span className="hidden sm:inline">
+                    {lang === 'it' ? 'Tastiera' : 'Keyboard'}: {isSoftKeyboardOpen ? 'ON' : 'OFF'}
+                  </span>
+                </button>
+              )}
             </div>
           </>
         )}
@@ -939,7 +1008,7 @@ export function VimEditor({
                   <button
                     type="button"
                     onClick={() => setIsPreviewFullScreen(true)}
-                    className="p-1.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] text-gray-600 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all flex items-center justify-center shadow-xs"
+                    className="hidden lg:flex p-1.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] text-gray-600 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-zinc-800 transition-all items-center justify-center shadow-xs"
                     title="A tutto schermo"
                   >
                     <Maximize2 size={13} />
@@ -1048,30 +1117,33 @@ export function VimEditor({
             <span>{currentMode === 'normal' ? 'NORMAL' : currentMode === 'visual' ? 'VISUAL' : currentMode === 'visual-line' ? 'V-LINE' : currentMode.toUpperCase()}</span>
             <ChevronUp size={11} className={`transition-transform duration-200 ${showModeMenu ? 'rotate-180' : ''}`} />
           </button>
-          
-          {/* Gboard Soft Keyboard Status & Toggle Indicator - only on touch/mobile */}
-          {isTouchDevice && onSoftKeyboardChange && (
+
+          {/* Direct CMD (:) Button for Mobile */}
+          {isTouchDevice && (
             <button
               type="button"
-              onClick={() => onSoftKeyboardChange(!isSoftKeyboardOpen)}
-              className={`h-[18px] px-1.5 my-auto flex items-center gap-1 rounded font-bold font-mono cursor-pointer transition-all border shadow-xs ${
-                isSoftKeyboardOpen
-                  ? 'bg-white text-emerald-700 dark:bg-[#0D0F12] dark:text-[#8AB4F8] border-white/60 dark:border-[#8AB4F8]'
-                  : 'bg-indigo-100 hover:bg-indigo-200 text-indigo-700 dark:bg-indigo-900/40 dark:hover:bg-indigo-800/60 dark:text-indigo-400 border-transparent'
-              }`}
-              title={
-                isSoftKeyboardOpen
-                  ? (lang === 'it' ? 'Tastiera Gboard attiva: tocca per nascondere' : 'Gboard keyboard active: tap to hide')
-                  : (lang === 'it' ? 'Tastiera Gboard nascosta: tocca per aprire' : 'Gboard keyboard hidden: tap to open')
-              }
-              id="footer-gboard-toggle-btn"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (editorRef.current?.view) {
+                  const view = editorRef.current.view;
+                  const cm = getCM(view);
+                  if (cm && Vim) {
+                    view.contentDOM.focus();
+                    Vim.handleKey(cm, '<Esc>', 'mapping');
+                    Vim.handleKey(cm, ':', 'mapping');
+                  }
+                }
+              }}
+              className="bg-white/20 hover:bg-white/30 active:bg-white/40 dark:bg-[#0D0F12] dark:hover:bg-[#1E2127] text-white dark:text-[#8AB4F8] px-2 h-[18px] my-auto flex items-center gap-1 rounded tracking-wider font-mono cursor-pointer transition-all border border-white/25 dark:border-[#8AB4F8]/40 shadow-xs mr-1.5"
+              title={lang === 'it' ? 'Apri riga di comando (:)' : 'Open command line (:)'}
             >
-              <Keyboard size={10} />
-              <span className="hidden xs:inline">
-                {isSoftKeyboardOpen ? 'ON' : 'OFF'}
-              </span>
+              <span className="font-bold">:</span>
+              <span>CMD</span>
             </button>
           )}
+          
+          
         </div>
 
         <div className="px-2 text-white dark:text-[#0D0F12] font-semibold tracking-tight truncate hidden sm:block min-w-0">

@@ -23,7 +23,7 @@ async function startServer() {
   app.post("/api/gemini/generate", async (req, res) => {
     const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey, systemInstruction } = req.body;
 
-    async function generateWithModelFallback(contents: string, sysInst?: string): Promise<any> {
+    async function generateWithModelFallback(contents: string, sysInst?: string, configOverrides: any = {}): Promise<any> {
       // Valid up-to-date models for @google/genai SDK
       let modelsToTry: string[] = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-flash-latest"];
       if (modelTier === 'flash-lite') {
@@ -54,7 +54,7 @@ async function startServer() {
       for (const { client, isCustom } of clientsToTry) {
         for (const m of modelsToTry) {
           try {
-            const config = sysInst ? { systemInstruction: sysInst } : undefined;
+            const config = { ...(sysInst ? { systemInstruction: sysInst } : {}), ...configOverrides };
             const res = await client.models.generateContent({ model: m, contents, config });
             return res;
           } catch (err: any) {
@@ -85,14 +85,17 @@ ${text}`, systemInstruction);
       }
 
       if (action === "latin") {
-        const searchTheme = theme ? `themed around "${theme}"` : "random";
+        const searchTheme = theme && theme.trim() !== 'random' ? `themed around "${theme}"` : "completely random";
+        const seed = Math.floor(Math.random() * 1000000);
         const response = await generateWithModelFallback(`Provide a famous or elegant Latin locution/phrase ${searchTheme}. 
+This is random execution #${seed}. Please avoid the most common mainstream ones (like Carpe Diem, Veni Vidi Vici, or Alea Iacta Est) unless specifically requested. Choose something highly unique, profound, or rare from Latin literature, law, or philosophy.
+
 Return the output in Italian, formatted exactly as a clean block of lines as follows:
 Line 1: The Latin phrase (e.g., "Audentes fortuna iuvat")
 Line 2: The Italian translation (e.g., "La fortuna aiuta gli audaci")
 Line 3: Elegant, short context, historical origin, or philosophical commentary (max 2 sentences).
 
-Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`, systemInstruction);
+Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`, systemInstruction, { temperature: 0.95 });
         return res.json({ result: response.text });
       }
 
