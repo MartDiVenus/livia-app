@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect } from 'react';
-import { X, ShieldCheck, Mail, Globe, BookOpen, Sparkles, Check, HelpCircle, FileText } from 'lucide-react';
+import { X, ShieldCheck, Mail, Globe, BookOpen, Sparkles, Check, HelpCircle, FileText, Github } from 'lucide-react';
 import { Logo } from './Logo';
 
 interface InfoModalProps {
@@ -142,6 +142,22 @@ export function InfoModal({
 
           {/* Links & Quick Actions */}
           <div className="space-y-2 pt-1">
+            {/* GitHub Source Code */}
+            <a
+              href="https://github.com/MartDiVenus/livia-app"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="w-full flex items-center justify-between p-2.5 rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50/50 dark:bg-zinc-800/20 hover:bg-gray-100/50 dark:hover:bg-zinc-800/50 text-gray-800 dark:text-zinc-200 transition-colors cursor-pointer text-left"
+            >
+              <div className="flex items-center gap-2">
+                <Github size={16} className="text-gray-600 dark:text-zinc-400" />
+                <span className="font-semibold text-xs">
+                  {lang === 'it' ? 'Codice Sorgente (GitHub)' : 'Source Code (GitHub)'}
+                </span>
+              </div>
+              <span className="text-[10px] text-gray-500 dark:text-zinc-400 font-mono">github.com &rarr;</span>
+            </a>
+
             {/* Support Center Trigger */}
             {onOpenSupportModal && (
               <button
