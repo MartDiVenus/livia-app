@@ -433,7 +433,7 @@ export function VimEditor({
       let modelLabel = '3.7 Flash';
       if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
       else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
       showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
     });
 
@@ -442,7 +442,7 @@ export function VimEditor({
       let modelLabel = '3.7 Flash';
       if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
       else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
       showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
     });
 
@@ -541,7 +541,7 @@ export function VimEditor({
       let modelLabel = '3.7 Flash';
       if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
       else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
       showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
          return;
       }
@@ -601,7 +601,7 @@ export function VimEditor({
       let modelLabel = '3.7 Flash';
       if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
       else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = 'Pro Esteso (Ragionamento)';
+      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
       showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
          return;
       }

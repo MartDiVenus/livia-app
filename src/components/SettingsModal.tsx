@@ -329,7 +329,7 @@ export function SettingsModal({
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100">
-                      <span>Pro Esteso (Ragionamento)</span>
+                      <span>{lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)'}</span>
                       {defaultModel === 'pro-thinking' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
@@ -453,41 +453,32 @@ export function SettingsModal({
                 <div className="flex items-center justify-between">
                   <h3 className="font-bold text-emerald-800 dark:text-emerald-400 flex items-center gap-1.5 text-xs">
                     <Code size={14} className="text-emerald-500" />
-                    <span>Google Workspace™ Marketplace SDK Manifest</span>
+                    <span>Integrazione Google Workspace™</span>
                   </h3>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const manifest = `{
-  "timeZone": "Europe/Rome",
-  "dependencies": {},
-  "exceptionLogging": "STACKDRIVER",
-  "runtimeVersion": "V8",
-  "oauthScopes": [
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/documents"
-  ],
-  "addOns": {
-    "common": { "name": "LiViA Editor™" },
-    "drive": { "homepageTrigger": { "runFunction": "onDriveHomepage" } },
-    "docs": { "homepageTrigger": { "runFunction": "onDocsHomepage" } }
-  }
-}`;
-                      navigator.clipboard.writeText(manifest);
-                      showToast(lang === 'it' ? 'Manifest appsscript.json copiato!' : 'appsscript.json manifest copied!', 'success');
-                    }}
-                    className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold rounded-lg transition-all flex items-center gap-1 cursor-pointer"
-                  >
-                    <Check size={12} />
-                    <span>{lang === 'it' ? 'Copia appsscript.json' : 'Copy appsscript.json'}</span>
-                  </button>
                 </div>
-                <p className="text-[11px] text-gray-600 dark:text-zinc-300 leading-relaxed">
-                  {lang === 'it'
-                    ? 'Usa la configurazione appsscript.json integrata per inserire il Deployment ID in Google Workspace™ Marketplace SDK e attivare la sidebar in Google Drive™ e Google Docs™.'
-                    : 'Use the integrated appsscript.json manifest configuration to register your Deployment ID in Google Workspace™ Marketplace SDK.'}
-                </p>
+                <div className="text-[11px] text-gray-600 dark:text-zinc-300 leading-relaxed space-y-1.5 pt-1">
+                  {lang === 'it' ? (
+                    <>
+                      <p>Puoi utilizzare <strong>LiViA Editor™</strong> come componente aggiuntivo (add-on) direttamente all'interno dei tuoi documenti e file cloud. Per farlo:</p>
+                      <ol className="list-decimal pl-4 space-y-1 text-gray-700 dark:text-zinc-400">
+                        <li>Apri <strong>Google Drive™</strong> o un documento in <strong>Google Docs™</strong>.</li>
+                        <li>Clicca sull'icona '+' (Installa componenti aggiuntivi) nella barra laterale destra.</li>
+                        <li>Cerca "LiViA Editor" all'interno del <strong>Google Workspace™ Marketplace</strong>.</li>
+                        <li>Clicca su "Installa" e concedi le autorizzazioni per iniziare a modificare i tuoi file con la potenza di LiViA.</li>
+                      </ol>
+                    </>
+                  ) : (
+                    <>
+                      <p>You can use <strong>LiViA Editor™</strong> as an add-on directly within your cloud documents and files. To do so:</p>
+                      <ol className="list-decimal pl-4 space-y-1 text-gray-700 dark:text-zinc-400">
+                        <li>Open <strong>Google Drive™</strong> or a document in <strong>Google Docs™</strong>.</li>
+                        <li>Click the '+' icon (Get add-ons) on the right sidebar.</li>
+                        <li>Search for "LiViA Editor" inside the <strong>Google Workspace™ Marketplace</strong>.</li>
+                        <li>Click "Install" and grant the permissions to start editing your files with the power of LiViA.</li>
+                      </ol>
+                    </>
+                  )}
+                </div>
               </div>
             </div>
           )}
