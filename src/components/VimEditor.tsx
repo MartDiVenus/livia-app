@@ -803,9 +803,23 @@ export function VimEditor({
                     </button>
                     {showTableMenu && (
                       <div className="absolute top-full left-0 mt-1 w-48 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg shadow-xl z-50 overflow-hidden font-sans">
-                        <button onClick={() => { insertAtCursor(`\n| Colonna 1 | Colonna 2 |\n|---|---|\n| Dato 1 | Dato 2 |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Semplice (2x2)</button>
-                        <button onClick={() => { insertAtCursor(`\n| Colonna 1 | Colonna 2 | Colonna 3 |\n|---|---|---|\n| Dato 1 | Dato 2 | Dato 3 |\n| Dato 4 | Dato 5 | Dato 6 |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella Media (3x3)</button>
-                        <button onClick={() => { insertAtCursor(`\n| Allineata a Sinistra | Centrata | Allineata a Destra |\n| :--- | :---: | ---: |\n| Testo | Testo | Testo |\n`); setShowTableMenu(false); }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">Tabella con Allineamenti</button>
+                        <button onClick={() => { 
+                          const content = lang === 'it' ? `\n| Colonna 1 | Colonna 2 |\n|---|---|\n| Dato 1 | Dato 2 |\n` : `\n| Column 1 | Column 2 |\n|---|---|\n| Data 1 | Data 2 |\n`;
+                          insertAtCursor(content); 
+                          setShowTableMenu(false); 
+                        }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">{lang === 'it' ? 'Tabella Semplice (2x2)' : 'Simple Table (2x2)'}</button>
+                        
+                        <button onClick={() => { 
+                          const content = lang === 'it' ? `\n| Colonna 1 | Colonna 2 | Colonna 3 |\n|---|---|---|\n| Dato 1 | Dato 2 | Dato 3 |\n| Dato 4 | Dato 5 | Dato 6 |\n` : `\n| Column 1 | Column 2 | Column 3 |\n|---|---|---|\n| Data 1 | Data 2 | Data 3 |\n| Data 4 | Data 5 | Data 6 |\n`;
+                          insertAtCursor(content); 
+                          setShowTableMenu(false); 
+                        }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">{lang === 'it' ? 'Tabella Media (3x3)' : 'Medium Table (3x3)'}</button>
+                        
+                        <button onClick={() => { 
+                          const content = lang === 'it' ? `\n| Allineata a Sinistra | Centrata | Allineata a Destra |\n| :--- | :---: | ---: |\n| Testo | Testo | Testo |\n` : `\n| Left Aligned | Centered | Right Aligned |\n| :--- | :---: | ---: |\n| Text | Text | Text |\n`;
+                          insertAtCursor(content); 
+                          setShowTableMenu(false); 
+                        }} className="w-full text-left px-3 py-2 text-xs hover:bg-gray-100 dark:hover:bg-zinc-800 text-gray-700 dark:text-zinc-300">{lang === 'it' ? 'Tabella con Allineamenti' : 'Table with Alignments'}</button>
                       </div>
                     )}
                   </div>
