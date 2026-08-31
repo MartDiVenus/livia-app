@@ -4,15 +4,19 @@
   "exceptionLogging": "STACKDRIVER",
   "runtimeVersion": "V8",
   "oauthScopes": [
-    "https://www.googleapis.com/auth/drive.file"
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.addons.metadata.readonly",
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/script.external_request"
   ],
   "urlFetchWhitelist": [
     "https://ais-dev-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/",
-    "https://ais-pre-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/"
+    "https://ais-pre-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/",
+    "https://martdivenus.github.io/"
   ],
   "addOns": {
     "common": {
-      "name": "LiViA Editor™",
+      "name": "LiViA Editor",
       "logoUrl": "https://ais-pre-cx2wjgtullqlljij7htqqx-90238823391.europe-west2.run.app/logo.png",
       "layoutProperties": {
         "primaryColor": "#059669",
@@ -21,7 +25,10 @@
       "homepageTrigger": {
         "runFunction": "onHomepage",
         "enabled": true
-      }
+      },
+      "openLinkUrlPrefixes": [
+        "https://martdivenus.github.io/"
+      ]
     },
     "drive": {
       "homepageTrigger": {
