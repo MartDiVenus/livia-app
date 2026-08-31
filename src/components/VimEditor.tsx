@@ -8,6 +8,20 @@ import { EditorView, keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
 import { insertTab } from '@codemirror/commands';
 import { foldService, foldCode, unfoldCode } from '@codemirror/language';
+import { cpp } from '@codemirror/lang-cpp';
+import { java } from '@codemirror/lang-java';
+import { html } from '@codemirror/lang-html';
+import { css } from '@codemirror/lang-css';
+import { sql } from '@codemirror/lang-sql';
+import { rust } from '@codemirror/lang-rust';
+import { json } from '@codemirror/lang-json';
+import { xml } from '@codemirror/lang-xml';
+import { StreamLanguage } from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { stex } from '@codemirror/legacy-modes/mode/stex';
+import { go } from '@codemirror/legacy-modes/mode/go';
+import { kotlin } from '@codemirror/legacy-modes/mode/clike';
+
 import { VimMode, FileFormat } from '../types';
 import { Code, Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
 import { renderRichPreviewContent } from '../utils/previewRenderer';
@@ -310,9 +324,21 @@ export function VimEditor({
   ];
 
   if (syntaxHighlightOn) {
-    if (format === 'md') extensions.push(markdown({ base: markdownLanguage }));
-    if (format === 'js' || format === 'ts') extensions.push(javascript());
-    if (format === 'py') extensions.push(python());
+    if (format === 'md' || format === 'docx') extensions.push(markdown({ base: markdownLanguage }));
+    else if (format === 'js' || format === 'ts') extensions.push(javascript());
+    else if (format === 'py') extensions.push(python());
+    else if (format === 'c' || format === 'cpp') extensions.push(cpp());
+    else if (format === 'java') extensions.push(java());
+    else if (format === 'html') extensions.push(html());
+    else if (format === 'css') extensions.push(css());
+    else if (format === 'sql') extensions.push(sql());
+    else if (format === 'rs') extensions.push(rust());
+    else if (format === 'json') extensions.push(json());
+    else if (format === 'xml') extensions.push(xml());
+    else if (format === 'sh' || format === 'bash') extensions.push(StreamLanguage.define(shell));
+    else if (format === 'tex' || format === 'ly') extensions.push(StreamLanguage.define(stex));
+    else if (format === 'go') extensions.push(StreamLanguage.define(go));
+    else if (format === 'kt') extensions.push(StreamLanguage.define(kotlin));
   }
 
   if (wordWrap) {
