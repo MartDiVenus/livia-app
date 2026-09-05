@@ -6,7 +6,8 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { 
   FileText, 
-  FolderOpen, 
+  FolderOpen,
+  Cloud, 
   Download, 
   Upload,
   FileDown, 
@@ -45,6 +46,9 @@ interface ToolbarProps {
   format: FileFormat;
   setFormat: (fmt: FileFormat) => void;
   onLoadContent: (content: string, name: string, format: FileFormat) => void;
+  onImportFileAction?: (content: string, name: string, format: FileFormat) => void;
+  onOpenDrivePicker?: () => void;
+  onOpenDocsPicker?: () => void;
   onExportPDF: () => void;
   onExportTex: () => void;
   onExportMd: () => void;
@@ -89,6 +93,9 @@ export function Toolbar({
   includePdfHeader,
   setIncludePdfHeader,
   onOpenGoogleDocsModal,
+  onImportFileAction,
+  onOpenDrivePicker,
+  onOpenDocsPicker,
   onOpenDriveIconsModal,
   onOpenPrivacyModal,
   onOpenInfoModal,
@@ -161,12 +168,12 @@ export function Toolbar({
           const result = await (mammoth as any).convertToHtml({ arrayBuffer });
           const htmlText = result.value || '';
           const extractedText = convertGoogleDocsHtmlToMarkdown(htmlText);
-          onLoadContent(extractedText, name, 'docx');
+          if (onImportFileAction) onImportFileAction(extractedText, name, 'docx'); else onLoadContent(extractedText, name, 'docx');
         } catch (err) {
           console.error('Error parsing DOCX file with mammoth:', err);
           const fallbackReader = new FileReader();
           fallbackReader.onload = (ev) => {
-            onLoadContent(sanitizeText(ev.target?.result as string || ''), name, 'docx');
+            if (onImportFileAction) onImportFileAction(sanitizeText(ev.target?.result as string || ''), name, 'docx'); else onLoadContent(sanitizeText(ev.target?.result as string || ''), name, 'docx');
           };
           fallbackReader.readAsText(file);
         }
@@ -180,7 +187,7 @@ export function Toolbar({
         const validFormats: FileFormat[] = ['txt', 'md', 'docx', 'py', 'kt', 'js', 'ts', 'bash', 'tex', 'json', 'xml', 'java', 'c', 'cpp', 'ly', 'html', 'css', 'sql', 'rs', 'go'];
         const detectedFormat = validFormats.includes(ext) ? ext : 'txt';
         
-        onLoadContent(content, name, detectedFormat);
+        if (onImportFileAction) onImportFileAction(content, name, detectedFormat); else onLoadContent(content, name, detectedFormat);
       };
       reader.readAsText(file);
     }
@@ -231,6 +238,7 @@ export function Toolbar({
           <div className="flex items-center gap-1.5 shrink-0">
             {/* Quick New File button */}
             <button
+              type="button"
               onClick={handleNewFile}
               className="p-1 rounded-md text-gray-600 dark:text-zinc-300 hover:bg-gray-100 dark:hover:bg-[#16181D] transition-all cursor-pointer"
               title={lang === 'it' ? 'Nuovo File' : 'New File'}
@@ -301,12 +309,12 @@ export function Toolbar({
           <div className="flex items-center gap-1.5 flex-1 min-w-0 md:flex-initial">
             {/* Filename Input */}
             <div className="flex items-center gap-1.5 border border-gray-300 dark:border-[#2D2D2D] rounded-lg px-2.5 py-1 bg-gray-50 dark:bg-[#16181D] focus-within:ring-2 focus-within:ring-emerald-500/30 flex-1 sm:flex-none">
-              <FileText size={15} className="text-gray-400 shrink-0" />
+              <FileText size={15} className="text-gray-400 shrink-0 hidden sm:block" />
               <input
                 type="text"
                 value={filename}
                 onChange={(e) => setFilename(e.target.value)}
-                className="text-xs font-mono font-medium bg-transparent text-gray-800 dark:text-[#E0E0E0] focus:outline-none w-full sm:w-32"
+                className="text-xs font-mono font-medium bg-transparent text-gray-800 dark:text-[#E0E0E0] focus:outline-none w-full min-w-[70px] sm:w-32"
                 placeholder="documento.txt"
                 id="filename-input"
               />
@@ -432,7 +440,9 @@ export function Toolbar({
           <div className="flex items-center gap-1.5">
             {/* New Blank File Button */}
             <button
-              onClick={() => {
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
                 handleNewFile();
                 setMobileMenuOpen(false);
               }}
@@ -498,8 +508,38 @@ export function Toolbar({
                   >
                     <FolderOpen size={16} className="text-amber-500 shrink-0" />
                     <div className="flex flex-col">
-                      <span className="font-bold">{lang === 'it' ? 'Apri File Locale' : 'Open Local File'}</span>
-                      <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Seleziona da dispositivo (.txt, .md, .docx...)' : 'Select from device'}</span>
+                      <span className="font-bold">Import/tear from Local File</span>
+                      <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Seleziona da dispositivo' : 'Select from device'}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMenuOpen(false);
+                      setMobileMenuOpen(false);
+                      if (onOpenDrivePicker) onOpenDrivePicker();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
+                  >
+                    <Cloud size={16} className="text-blue-500 shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="font-bold">Import/tear from Google Drive™</span>
+                      <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Esplora e seleziona file' : 'Browse and select file'}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMenuOpen(false);
+                      setMobileMenuOpen(false);
+                      if (onOpenDocsPicker) onOpenDocsPicker();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
+                  >
+                    <FileText size={16} className="text-blue-600 shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="font-bold">Import/tear from Google Docs™</span>
+                      <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Seleziona documento' : 'Select document'}</span>
                     </div>
                   </button>
                 </div>
@@ -653,6 +693,8 @@ export function Toolbar({
                 <span className="inline">{lang === 'it' ? 'Scorciatoie' : 'Shortcuts'}</span>
               </button>
             )}
+
+            
 
             {onOpenGuide && (
               <button

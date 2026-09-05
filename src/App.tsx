@@ -16,6 +16,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { AiProfilesModal } from './components/AiProfilesModal';
 import { AuxiliaryKeyboard } from './components/AuxiliaryKeyboard';
 import { exportToPDF } from './utils/pdfExport';
+import { copyToClipboard } from './utils/clipboard';
 import { convertToLaTeX } from './utils/latexExport';
 import { VimMode, FileFormat, TEMPLATES, getTemplates, getLvarcTemplate, getHelpTemplate, getHelpColorsTemplate, getHelpFiguresTemplate, getHelpTablesTemplate, getHelpAiTemplate, HELP_TEMPLATE, HELP_COLORS_TEMPLATE, HELP_FIGURES_TEMPLATE, HELP_TABLES_TEMPLATE, HELP_AI_TEMPLATE, HELP_FIGURES_TABLES_TEMPLATE, FileData, sanitizeText, AiProfile } from './types';
 import { parseOutline, OutlineElement } from './utils/outlineParser';
@@ -26,7 +27,8 @@ import {
   Sparkles, 
   HelpCircle, 
   BookOpen,
-  Copy, 
+  Copy,
+  X,
   Check, 
   FileCode, 
   Settings, 
@@ -74,7 +76,7 @@ interface LvaConfig {
   syntaxHighlight: boolean;
   lang?: 'it' | 'en';
   apiKey?: string;
-  model?: 'flash' | 'pro';
+  model?: 'flash' | 'pro' | 'flash-lite' | 'pro-thinking';
 }
 
 export function checkIsMobile(): boolean {
@@ -423,6 +425,14 @@ export default function App() {
   const [currentDriveFolderName, setCurrentDriveFolderName] = useState<string>('Il mio Drive');
   const [newDriveFolderName, setNewDriveFolderName] = useState<string>('');
   const [isDriveFullScreen, setIsDriveFullScreen] = useState<boolean>(false);
+  const [drivePickerFilter, setDrivePickerFilter] = useState<'all' | 'docs'>('all');
+  const [pendingFileAction, setPendingFileAction] = useState<{
+    source: 'local' | 'drive';
+    name: string;
+    localContent?: string;
+    localFormat?: any;
+    driveFile?: any;
+  } | null>(null);
   
   // Custom Toast state
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' } | null>(null);
@@ -1160,6 +1170,9 @@ export default function App() {
         format={format}
         setFormat={setFormat}
         onLoadContent={handleLoadContent}
+        onImportFileAction={(content, name, format) => setPendingFileAction({ source: 'local', name, localContent: content, localFormat: format })}
+        onOpenDrivePicker={() => { setDrivePickerFilter('all'); setIsDriveFullScreen(true); }}
+        onOpenDocsPicker={() => { setDrivePickerFilter('docs'); setIsDriveFullScreen(true); }}
         onExportPDF={handleExportPDF}
         onExportTex={handleExportTex}
         onExportMd={handleExportMd}
@@ -1300,6 +1313,31 @@ export default function App() {
               setContent('');
               setFormat('txt');
               return { success: true, message: lang === 'it' ? 'Editor svuotato' : 'Editor cleared', isEmptyHistory: true };
+            }}
+            onTearFileState={(rawTargetName) => {
+              if (!rawTargetName) return { found: false, name: '' };
+              const cleanTarget = rawTargetName.replace(/^["']|["']$/g, '').trim();
+              const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
+              
+              let existing = virtualFiles.find(f => 
+                f.name.toLowerCase() === cleanTarget.toLowerCase() || 
+                f.name.toLowerCase() === baseName.toLowerCase()
+              );
+              if (!existing) {
+                existing = virtualFiles.find(f => 
+                  f.name.toLowerCase().split('.')[0] === baseName.toLowerCase()
+                );
+              }
+              if (!existing) {
+                existing = virtualFiles.find(f => 
+                  f.name.toLowerCase().includes(baseName.toLowerCase())
+                );
+              }
+              
+              if (existing) {
+                return { found: true, name: existing.name, content: existing.content };
+              }
+              return { found: false, name: cleanTarget };
             }}
             onOpenFileState={(rawTargetName) => {
               if (!rawTargetName) return { found: false, name: '' };
@@ -1749,8 +1787,9 @@ export default function App() {
                             <FileIcon size={14} className={isActive ? 'text-emerald-600 dark:text-[#8AB4F8]' : 'text-gray-400'} />
                             <span className="truncate">{file.name}</span>
                           </span>
-                          {file.name !== '.lvarc' && (
-                            <button
+                          <div className="flex items-center gap-1 shrink-0">
+                            {file.name !== '.lvarc' && (
+                              <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setVirtualFiles(prev => prev.filter(f => f.name !== file.name));
@@ -1770,6 +1809,22 @@ export default function App() {
                               <Trash2 size={12} />
                             </button>
                           )}
+                          <button
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const success = await copyToClipboard(file.content);
+                              if (success) {
+                                showToast(lang === 'it' ? `Contenuto di "${file.name}" strappato (copiato)!` : `Content of "${file.name}" torn (copied)!`, 'success');
+                              } else {
+                                showToast(lang === 'it' ? `Impossibile copiare il file "${file.name}".` : `Failed to copy "${file.name}".`, 'error');
+                              }
+                            }}
+                            className="text-gray-400 hover:text-emerald-500 p-1 rounded-md hover:bg-gray-200 dark:hover:bg-[#2C313C]"
+                            title={lang === 'it' ? 'Strappa/Copia Contenuto' : 'Tear/Copy Content'}
+                          >
+                            <Copy size={12} />
+                          </button>
+                          </div>
                         </div>
                       );
                     })}
@@ -2065,9 +2120,37 @@ export default function App() {
                                   )}
                                   <span className="truncate">{file.name}</span>
                                 </span>
-                                <span className="text-[9px] text-gray-400 font-sans shrink-0">
-                                  {isFolder ? (lang === 'it' ? 'Cartella' : 'Folder') : new Date(file.modifiedTime).toLocaleDateString()}
-                                </span>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className="text-[9px] text-gray-400 font-sans">
+                                    {isFolder ? (lang === 'it' ? 'Cartella' : 'Folder') : new Date(file.modifiedTime).toLocaleDateString()}
+                                  </span>
+                                  {!isFolder && (
+                                    <button
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        if (!driveToken) return;
+                                        setIsLoadingDrive(true);
+                                        try {
+                                          const fileContent = await readFromDrive(driveToken, file.id, file.mimeType);
+                                          const success = await copyToClipboard(fileContent);
+                                          if (success) {
+                                            showToast(lang === 'it' ? `Contenuto di "${file.name}" strappato!` : `Content of "${file.name}" torn!`, 'success');
+                                          } else {
+                                            showToast(lang === 'it' ? `Impossibile copiare "${file.name}".` : `Failed to copy "${file.name}".`, 'error');
+                                          }
+                                        } catch (err) {
+                                          showToast(lang === 'it' ? 'Errore di download da Drive.' : 'Error downloading from Drive.', 'error');
+                                        } finally {
+                                          setIsLoadingDrive(false);
+                                        }
+                                      }}
+                                      className="text-gray-400 hover:text-blue-500 p-1 rounded-md hover:bg-gray-200 dark:hover:bg-[#2C313C]"
+                                      title={lang === 'it' ? 'Strappa/Copia Contenuto' : 'Tear/Copy Content'}
+                                    >
+                                      <Copy size={12} />
+                                    </button>
+                                  )}
+                                </div>
                               </div>
                             );
                           })
@@ -2349,9 +2432,11 @@ export default function App() {
         <div className="fixed inset-0 z-50 bg-white/95 dark:bg-[#0D0F12]/95 backdrop-blur-md p-6 flex flex-col font-sans">
           <div className="flex items-center justify-between pb-4 border-b border-gray-200 dark:border-[#2D2D2D] mb-4">
             <div className="flex items-center gap-2">
-              <Cloud size={20} className="text-blue-500" />
+              {drivePickerFilter === 'docs' ? <FileText size={20} className="text-blue-600" /> : <Cloud size={20} className="text-blue-500" />}
               <h2 className="text-base font-bold text-gray-800 dark:text-zinc-100">
-                {lang === 'it' ? 'Esplora Google Drive™ (Schermo Intero)' : 'Explore Google Drive™ (Full Screen)'}
+                {drivePickerFilter === 'docs' 
+                  ? (lang === 'it' ? 'Esplora Google Docs™' : 'Explore Google Docs™')
+                  : (lang === 'it' ? 'Esplora Google Drive™' : 'Explore Google Drive™')}
               </h2>
             </div>
             <button
@@ -2363,6 +2448,33 @@ export default function App() {
             </button>
           </div>
 
+          {!driveUser ? (
+            <div className="flex-1 flex flex-col items-center justify-center">
+              <Cloud size={48} className="text-blue-500 mb-4 opacity-50" />
+              <h3 className="text-lg font-bold text-gray-800 dark:text-zinc-100 mb-2">
+                {lang === 'it' ? 'Autenticazione Richiesta' : 'Authentication Required'}
+              </h3>
+              <p className="text-sm text-gray-500 dark:text-zinc-400 text-center max-w-md mb-6">
+                {lang === 'it'
+                  ? 'Devi accedere con il tuo account Google per esplorare e importare file da Google Drive o Google Docs.'
+                  : 'You must sign in with your Google account to browse and import files from Google Drive or Google Docs.'}
+              </p>
+              <button
+                onClick={handleDriveSignIn}
+                className="border border-gray-300 dark:border-zinc-700 hover:bg-gray-50 dark:hover:bg-zinc-800 rounded-xl py-3 px-6 transition-all cursor-pointer flex items-center justify-center gap-3"
+              >
+                <svg version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" className="w-5 h-5 shrink-0" style={{ display: 'block' }}>
+                  <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                  <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                  <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                  <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                  <path fill="none" d="M0 0h48v48H0z"></path>
+                </svg>
+                <span className="text-gray-700 dark:text-zinc-200 font-bold">{lang === 'it' ? 'Accedi con Google' : 'Sign in with Google'}</span>
+              </button>
+            </div>
+          ) : (
+            <>
           {/* Search bar & Refresh */}
           <div className="flex items-center gap-3 mb-4">
             <div className="relative flex-1">
@@ -2427,6 +2539,7 @@ export default function App() {
           <div className="flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {driveFiles
               .filter(f => f.name.toLowerCase().includes(driveSearch.toLowerCase()))
+              .filter(f => drivePickerFilter === 'all' || f.mimeType === 'application/vnd.google-apps.folder' || f.mimeType === 'application/vnd.google-apps.document')
               .map((file, idx) => {
                 const isFolder = file.mimeType === 'application/vnd.google-apps.folder';
                 const isCurrent = file.id === activeDriveFileId;
@@ -2437,7 +2550,7 @@ export default function App() {
                       if (isFolder) {
                         handleNavigateIntoFolder(file.id, file.name);
                       } else {
-                        handleOpenDriveFile(file);
+                        setPendingFileAction({ source: 'drive', name: file.name, driveFile: file });
                         setIsDriveFullScreen(false);
                       }
                     }}
@@ -2447,24 +2560,128 @@ export default function App() {
                         : 'bg-white dark:bg-[#16181D] border-gray-200 dark:border-[#2D2D2D] hover:border-blue-400 dark:hover:border-blue-600'
                     }`}
                   >
-                    <div className="flex items-start gap-3">
-                      {isFolder ? (
-                        <Folder size={24} className="text-amber-500 fill-amber-500/20 shrink-0 mt-0.5" />
-                      ) : (
-                        <Cloud size={24} className="text-blue-500 shrink-0 mt-0.5" />
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <span className="font-bold text-xs truncate block text-gray-800 dark:text-zinc-200">
-                          {file.name}
-                        </span>
-                        <span className="text-[10px] text-gray-400 dark:text-zinc-500 block mt-1 font-mono">
-                          {isFolder ? (lang === 'it' ? 'Cartella' : 'Folder') : new Date(file.modifiedTime).toLocaleDateString()}
-                        </span>
+                    <div className="flex items-start justify-between w-full">
+                      <div className="flex items-start gap-3 min-w-0 flex-1">
+                        {isFolder ? (
+                          <Folder size={24} className="text-amber-500 fill-amber-500/20 shrink-0 mt-0.5" />
+                        ) : (
+                          <Cloud size={24} className="text-blue-500 shrink-0 mt-0.5" />
+                        )}
+                        <div className="min-w-0 flex-1">
+                          <span className="font-bold text-xs truncate block text-gray-800 dark:text-zinc-200">
+                            {file.name}
+                          </span>
+                          <span className="text-[10px] text-gray-400 dark:text-zinc-500 block mt-1 font-mono">
+                            {isFolder ? (lang === 'it' ? 'Cartella' : 'Folder') : new Date(file.modifiedTime).toLocaleDateString()}
+                          </span>
+                        </div>
                       </div>
+                      {!isFolder && (
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            if (!driveToken) return;
+                            setIsLoadingDrive(true);
+                            try {
+                              const fileContent = await readFromDrive(driveToken, file.id, file.mimeType);
+                              const success = await copyToClipboard(fileContent);
+                              if (success) {
+                                showToast(lang === 'it' ? `Contenuto di "${file.name}" strappato!` : `Content of "${file.name}" torn!`, 'success');
+                              } else {
+                                showToast(lang === 'it' ? `Impossibile copiare "${file.name}".` : `Failed to copy "${file.name}".`, 'error');
+                              }
+                            } catch (err) {
+                              showToast(lang === 'it' ? 'Errore di download da Drive.' : 'Error downloading from Drive.', 'error');
+                            } finally {
+                              setIsLoadingDrive(false);
+                            }
+                          }}
+                          className="text-gray-400 hover:text-blue-500 p-1.5 rounded-md hover:bg-gray-200 dark:hover:bg-[#2C313C] shrink-0 ml-2"
+                          title={lang === 'it' ? 'Strappa/Copia Contenuto' : 'Tear/Copy Content'}
+                        >
+                          <Copy size={16} />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
               })}
+          </div>
+          </>
+          )}
+        </div>
+      )}
+
+      {/* Pending Action Modal (Import / Tear) */}
+      {pendingFileAction && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans">
+          <div className="bg-white dark:bg-[#16181D] w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 dark:border-[#2D2D2D] overflow-hidden flex flex-col">
+            <div className="p-4 border-b border-gray-100 dark:border-[#2D2D2D] flex items-center justify-between bg-gray-50/50 dark:bg-[#0D0F12]/50">
+              <h3 className="font-bold text-gray-800 dark:text-zinc-100 flex items-center gap-2">
+                <Sparkles size={16} className="text-blue-500" />
+                {lang === 'it' ? 'Azione Richiesta' : 'Action Required'}
+              </h3>
+              <button 
+                onClick={() => setPendingFileAction(null)}
+                className="text-gray-400 hover:text-gray-600 dark:hover:text-zinc-300 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            
+            <div className="p-5 flex flex-col gap-4">
+              <p className="text-sm text-gray-600 dark:text-zinc-400 text-center">
+                {lang === 'it' ? `Cosa vuoi fare con il file "${pendingFileAction.name}"?` : `What do you want to do with "${pendingFileAction.name}"?`}
+              </p>
+              
+              <div className="flex flex-col gap-2.5">
+                <button
+                  onClick={async () => {
+                    const action = pendingFileAction;
+                    setPendingFileAction(null);
+                    if (action.source === 'local' && action.localContent) {
+                      handleLoadContent(action.localContent, action.name, action.localFormat);
+                    } else if (action.source === 'drive' && action.driveFile) {
+                      handleOpenDriveFile(action.driveFile);
+                    }
+                  }}
+                  className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-sm shadow-sm transition-all flex items-center justify-center gap-2"
+                >
+                  <FileText size={16} />
+                  {lang === 'it' ? 'Apri nell\'Editor' : 'Open in Editor'}
+                </button>
+                
+                <button
+                  onClick={async () => {
+                    const action = pendingFileAction;
+                    setPendingFileAction(null);
+                    
+                    if (action.source === 'local' && action.localContent !== undefined) {
+                      const success = await copyToClipboard(action.localContent);
+                      if (success) showToast(lang === 'it' ? `Contenuto di "${action.name}" strappato!` : `Content of "${action.name}" torn!`, 'success');
+                      else showToast(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.', 'error');
+                    } else if (action.source === 'drive' && action.driveFile) {
+                      if (!driveToken) return;
+                      setIsLoadingDrive(true);
+                      try {
+                        const fileContent = await readFromDrive(driveToken, action.driveFile.id, action.driveFile.mimeType);
+                        const success = await copyToClipboard(fileContent);
+                        if (success) showToast(lang === 'it' ? `Contenuto di "${action.name}" strappato!` : `Content of "${action.name}" torn!`, 'success');
+                        else showToast(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.', 'error');
+                      } catch (err) {
+                        showToast(lang === 'it' ? 'Errore di download da Drive.' : 'Error downloading from Drive.', 'error');
+                      } finally {
+                        setIsLoadingDrive(false);
+                      }
+                    }
+                  }}
+                  className="w-full py-3 px-4 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800/50 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2"
+                >
+                  <Copy size={16} />
+                  {lang === 'it' ? 'Strappa (Copia negli appunti)' : 'Tear (Copy to clipboard)'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

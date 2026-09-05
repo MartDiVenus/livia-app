@@ -54,3 +54,11 @@ html, body {
 
 /* Force hide Vite error overlay */
 vite-error-overlay { display: none !important; }
+
+/* CodeMirror Selection highlighting */
+.cm-selectionBackground, .cm-focused .cm-selectionBackground {
+  background-color: rgba(52, 211, 153, 0.4) !important;
+}
+.dark .cm-selectionBackground, .dark .cm-focused .cm-selectionBackground {
+  background-color: rgba(138, 180, 248, 0.4) !important;
+}

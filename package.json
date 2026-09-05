@@ -28,7 +28,7 @@
     "@codemirror/language-data": "^6.5.2",
     "@codemirror/legacy-modes": "^6.5.3",
     "@codemirror/state": "^6.7.1",
-    "@codemirror/view": "^6.43.9",
+    "@codemirror/view": "^6.43.10",
     "@google/genai": "^2.4.0",
     "@replit/codemirror-vim": "^6.4.0",
     "@tailwindcss/vite": "^4.1.14",

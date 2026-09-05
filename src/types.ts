@@ -18,7 +18,7 @@ export interface VimState {
   redoHistory: string[]; // History stack for .
 }
 
-export type FileFormat = 'txt' | 'md' | 'json' | 'xml' | 'py' | 'kt' | 'js' | 'ts' | 'bash' | 'tex' | 'docx' | 'java' | 'c' | 'cpp' | 'ly' | 'html' | 'css' | 'svg' | 'sql' | 'rs' | 'go';
+export type FileFormat = 'txt' | 'md' | 'json' | 'xml' | 'py' | 'kt' | 'js' | 'ts' | 'bash' | 'sh' | 'tex' | 'docx' | 'java' | 'c' | 'cpp' | 'ly' | 'html' | 'css' | 'svg' | 'sql' | 'rs' | 'go';
 
 export interface FileData {
   name: string;

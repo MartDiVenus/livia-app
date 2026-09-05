@@ -1,11 +1,12 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { vim, Vim, getCM } from '@replit/codemirror-vim';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { EditorView, keymap } from '@codemirror/view';
-import { Prec } from '@codemirror/state';
+import { Prec, EditorState, Transaction, StateField } from '@codemirror/state';
+import { Decoration, DecorationSet } from '@codemirror/view';
 import { insertTab } from '@codemirror/commands';
 import { foldService, foldCode, unfoldCode } from '@codemirror/language';
 import { cpp } from '@codemirror/lang-cpp';
@@ -17,6 +18,7 @@ import { rust } from '@codemirror/lang-rust';
 import { json } from '@codemirror/lang-json';
 import { xml } from '@codemirror/lang-xml';
 import { StreamLanguage } from '@codemirror/language';
+import { copyToClipboard } from '../utils/clipboard';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { go } from '@codemirror/legacy-modes/mode/go';
@@ -44,6 +46,7 @@ interface VimEditorProps {
   onSaveFileState: (name: string, content: string) => void;
   onReadFileState: (name: string) => string | null;
   onOpenFileState?: (targetName: string) => { found: boolean; name: string };
+  onTearFileState?: (target: string) => { found: boolean; name: string; content?: string };
   onCloseFileState?: (force: boolean) => { success: boolean; message: string; isEmptyHistory?: boolean };
   onShowHelp?: (topic?: string) => void;
   onAiCommand?: (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string) => void) => Promise<void>;
@@ -74,6 +77,7 @@ export function VimEditor({
   onSaveFileState,
   onReadFileState,
   onOpenFileState,
+  onTearFileState,
   onCloseFileState,
   onShowHelp,
   onAiCommand,
@@ -86,7 +90,17 @@ export function VimEditor({
   onSoftKeyboardChange
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const proxyInputRef = useRef<HTMLTextAreaElement>(null);
   const isInsertModeRef = useRef(false);
+  const setContentRef = useRef(setContent);
+  useEffect(() => {
+    setContentRef.current = setContent;
+  }, [setContent]);
+  const handleEditorChange = useCallback((val) => {
+    if (setContentRef.current) setContentRef.current(val);
+  }, []);
+  const lastKeydownRef = useRef<{key: string, time: number}>({key: '', time: 0});
+  const isTouchDeviceRef = useRef(false);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTableMenu, setShowTableMenu] = useState(false);
   const [showImageMenu, setShowImageMenu] = useState(false);
@@ -129,7 +143,9 @@ export function VimEditor({
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
   useEffect(() => {
-    setIsTouchDevice(('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || ''));
+    const isTouch = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+    setIsTouchDevice(isTouch);
+    isTouchDeviceRef.current = isTouch;
   }, []);
 
   const vimModesList: { key: VimMode; label: string; shortcut: string; descIt: string; descEn: string }[] = [
@@ -157,9 +173,18 @@ export function VimEditor({
     if (newMode === 'visual-line') key = 'V';
     
     if (key) {
+      (window as any).isVimHandling = true;
       Vim.handleKey(cm, key, 'mapping');
+      (window as any).isVimHandling = false;
     }
-    // Nessun trigger di focus() sul DOM: questo evita l'apertura forzata della Gboard.
+    
+    if (isTouchDeviceRef.current) {
+      if (newMode === 'insert') {
+        editorRef.current?.view?.contentDOM.focus();
+      } else {
+        proxyInputRef.current?.focus();
+      }
+    }
   };
 
   const [showPreview, setShowPreview] = useState(false);
@@ -277,14 +302,115 @@ export function VimEditor({
     return null;
   });
 
-  const extensions = [
+  const extensions = useMemo(() => {
+  const exts = [
     vim({ status: true }),
     
-    EditorView.contentAttributes.of({
-      inputmode: (isSoftKeyboardOpen === false) ? 'none' : 'text',
+    // Custom extension to draw visual selection on mobile when focus is on proxy input
+    StateField.define<DecorationSet>({
+      create(state) {
+        return Decoration.none;
+      },
+      update(decorations, tr) {
+        if (isTouchDeviceRef.current && !isInsertModeRef.current) {
+          const sel = tr.state.selection.main;
+          if (sel.empty) return Decoration.none;
+          return Decoration.set([
+            Decoration.mark({ class: 'cm-fake-selection' }).range(sel.from, sel.to)
+          ]);
+        }
+        return Decoration.none;
+      },
+      provide: f => EditorView.decorations.from(f)
+    }),
+    
+    EditorView.domEventHandlers({
+      focus(event, view) {
+        if (isTouchDeviceRef.current && !isInsertModeRef.current) {
+           setTimeout(() => proxyInputRef.current?.focus(), 10);
+        }
+      },
+      keydown(event, view) {
+        if (!isTouchDeviceRef.current) return;
+        lastKeydownRef.current = { key: event.key, time: Date.now() };
+        
+        if (!isInsertModeRef.current) {
+          // Attempt to aggressively intercept the keydown and process it via Vim
+          // This prevents Gboard composition if the browser respects preventDefault on keydown
+          if (event.key && event.key !== 'Unidentified' && event.key !== 'Process') {
+            event.preventDefault();
+            const cm = getCM(view);
+            if (cm && Vim) {
+              (window as any).isVimHandling = true;
+              Vim.handleKey(cm, event.key, 'mapping');
+              (window as any).isVimHandling = false;
+            }
+            return true;
+          }
+        }
+      },
+      beforeinput(event, view) {
+        if (!isTouchDeviceRef.current) return;
+
+        if (!isInsertModeRef.current) {
+          const timeSinceKeydown = Date.now() - lastKeydownRef.current.time;
+          const wasRealKey = lastKeydownRef.current.key !== 'Unidentified' && lastKeydownRef.current.key !== 'Process' && lastKeydownRef.current.key !== '';
+          
+          if (timeSinceKeydown < 100 && wasRealKey) {
+            // Key was typed on a physical keyboard attached to mobile
+            event.preventDefault();
+            return true;
+          }
+
+          // Soft keyboard (Gboard) typing directly without a valid keydown
+          event.preventDefault();
+          const cm = getCM(view);
+          if (cm && Vim) {
+            (window as any).isVimHandling = true;
+            if (event.data) {
+              for (const c of event.data) {
+                Vim.handleKey(cm, c, 'mapping');
+              }
+            } else if (event.inputType === 'deleteContentBackward') {
+              Vim.handleKey(cm, '<Backspace>', 'mapping');
+            } else if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+              Vim.handleKey(cm, '<Enter>', 'mapping');
+            }
+            (window as any).isVimHandling = false;
+          }
+          return true;
+        }
+        return false;
+      }
     }),
 
+    EditorView.contentAttributes.of({
+      inputmode: (isTouchDeviceRef.current && isSoftKeyboardOpen === false) ? 'none' : 'text',
+      autocorrect: 'off',
+      autocapitalize: 'none',
+      spellcheck: 'false',
+      'data-gramm': 'false'
+    }),
+    
+    // STRICT MOBILE FIX: Prevent soft keyboard from modifying document in NORMAL/VISUAL mode
+    EditorState.transactionFilter.of((tr) => {
+      if (isTouchDeviceRef.current && !isInsertModeRef.current && tr.docChanged) {
+        // Se la modifica al documento NON proviene esplicitamente da un comando Vim,
+        // ma arriva (ad esempio) dal DOM observer di CodeMirror che cerca di sincronizzare
+        // una modifica fatta dalla tastiera Gboard in modalità composition, bloccala!
+        if (!(window as any).isVimHandling) {
+          return [];
+        }
+      }
+      return tr;
+    }),
+
+
+
     EditorView.theme({
+      ".cm-fake-selection": {
+        backgroundColor: "rgba(51, 153, 255, 0.4) !important"
+      },
       "&": {
         fontFamily: 'var(--font-mono)'
       },
@@ -309,7 +435,48 @@ export function VimEditor({
 
     customFoldService,
 
-    Prec.highest(keymap.of([{
+    Prec.highest(keymap.of([
+      {
+        key: 'ArrowLeft',
+        run: (view) => {
+          if (!isInsertModeRef.current) {
+            const cm = getCM(view);
+            if (cm && Vim) { Vim.handleKey(cm, 'h', 'mapping'); return true; }
+          }
+          return false;
+        }
+      },
+      {
+        key: 'ArrowRight',
+        run: (view) => {
+          if (!isInsertModeRef.current) {
+            const cm = getCM(view);
+            if (cm && Vim) { Vim.handleKey(cm, 'l', 'mapping'); return true; }
+          }
+          return false;
+        }
+      },
+      {
+        key: 'ArrowUp',
+        run: (view) => {
+          if (!isInsertModeRef.current) {
+            const cm = getCM(view);
+            if (cm && Vim) { Vim.handleKey(cm, 'k', 'mapping'); return true; }
+          }
+          return false;
+        }
+      },
+      {
+        key: 'ArrowDown',
+        run: (view) => {
+          if (!isInsertModeRef.current) {
+            const cm = getCM(view);
+            if (cm && Vim) { Vim.handleKey(cm, 'j', 'mapping'); return true; }
+          }
+          return false;
+        }
+      },
+      {
        key: 'Tab',
        run: (view) => {
         const cm = (view as any).cm;
@@ -324,26 +491,28 @@ export function VimEditor({
   ];
 
   if (syntaxHighlightOn) {
-    if (format === 'md' || format === 'docx') extensions.push(markdown({ base: markdownLanguage }));
-    else if (format === 'js' || format === 'ts') extensions.push(javascript());
-    else if (format === 'py') extensions.push(python());
-    else if (format === 'c' || format === 'cpp') extensions.push(cpp());
-    else if (format === 'java') extensions.push(java());
-    else if (format === 'html') extensions.push(html());
-    else if (format === 'css') extensions.push(css());
-    else if (format === 'sql') extensions.push(sql());
-    else if (format === 'rs') extensions.push(rust());
-    else if (format === 'json') extensions.push(json());
-    else if (format === 'xml') extensions.push(xml());
-    else if (format === 'sh' || format === 'bash') extensions.push(StreamLanguage.define(shell));
-    else if (format === 'tex' || format === 'ly') extensions.push(StreamLanguage.define(stex));
-    else if (format === 'go') extensions.push(StreamLanguage.define(go));
-    else if (format === 'kt') extensions.push(StreamLanguage.define(kotlin));
+    if (format === 'md' || format === 'docx') exts.push(markdown({ base: markdownLanguage }));
+    else if (format === 'js' || format === 'ts') exts.push(javascript());
+    else if (format === 'py') exts.push(python());
+    else if (format === 'c' || format === 'cpp') exts.push(cpp());
+    else if (format === 'java') exts.push(java());
+    else if (format === 'html') exts.push(html());
+    else if (format === 'css') exts.push(css());
+    else if (format === 'sql') exts.push(sql());
+    else if (format === 'rs') exts.push(rust());
+    else if (format === 'json') exts.push(json());
+    else if (format === 'xml') exts.push(xml());
+    else if (format === 'sh' || format === 'bash') exts.push(StreamLanguage.define(shell));
+    else if (format === 'tex' || format === 'ly') exts.push(StreamLanguage.define(stex));
+    else if (format === 'go') exts.push(StreamLanguage.define(go));
+    else if (format === 'kt') exts.push(StreamLanguage.define(kotlin));
   }
 
   if (wordWrap) {
-    extensions.push(EditorView.lineWrapping);
+    exts.push(EditorView.lineWrapping);
   }
+  return exts;
+  }, [isSoftKeyboardOpen, syntaxHighlightOn, format, wordWrap]);
 
   // Handle Tab key overriding CodeMirror defaults in Insert mode
   // The `vim` extension handles Insert mode keymaps, so we let CodeMirror's basicSetup or custom extension handle it.
@@ -353,6 +522,15 @@ export function VimEditor({
     
     // Monkey-patch findKey to allow `ng` instead of `ngg` (jump to line n)
     // We only do this once to avoid infinite wrapping.
+    // Removed old Vim.map for arrow keys as they don't work reliably
+    // Map G in visual mode to select to the very end of the last line
+    // Map G in visual mode to select to the very end of the last line
+    Vim.defineMotion("gotoEndFull", (cm, head, motionArgs) => {
+      const lastLine = cm.lineCount() - 1;
+      const lastCh = cm.getLine(lastLine).length;
+      return { line: lastLine, ch: lastCh };
+    });
+    Vim.mapCommand("G", "motion", "gotoEndFull", {}, { context: "visual" });
     if (!(Vim as any)._liviaFindKeyPatched) {
       const origFindKey = Vim.findKey;
       Vim.findKey = function(cm_: any, key: string, origin: string) {
@@ -409,7 +587,7 @@ export function VimEditor({
          if (res && res.message) {
             showFlashMessage(res.message);
          }
-         if (res && res.closedAll) {
+         if (res && res.isEmptyHistory) {
             showFlashMessage(lang === 'it' ? 'Ultimo file chiuso' : 'Last file closed');
          }
       }
@@ -521,6 +699,28 @@ export function VimEditor({
       } else if (param.includes('lang=en') || param.includes('language=en')) {
          if (setLang) setLang('en');
          showFlashMessage('✓ Language set to English (EN).');
+      }
+    });
+
+
+    Vim.defineEx('tear', 'tear', async (cm: any, params: any) => {
+      const target = params?.args?.[0];
+      if (!target) {
+         showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
+         return;
+      }
+      if (onTearFileState) {
+         const res = onTearFileState(target);
+         if (res && res.found && res.content !== undefined) {
+            const success = await copyToClipboard(res.content);
+            if (success) {
+               showFlashMessage(lang === 'it' ? `Contenuto di "${res.name}" strappato!` : `Content of "${res.name}" torn!`);
+            } else {
+               showFlashMessage(lang === 'it' ? `Errore di copia per "${res.name}".` : `Copy error for "${res.name}".`);
+            }
+         } else {
+            showFlashMessage(lang === 'it' ? `File "${target}" non trovato.` : `File "${target}" not found.`);
+         }
       }
     });
 
@@ -703,6 +903,13 @@ export function VimEditor({
        }
     }
   }, [editorRef.current?.view, onModeChange]);
+
+  const basicSetupOptions = useMemo(() => ({
+    lineNumbers: showLineNumbers,
+    foldGutter: true,
+    highlightActiveLine: false,
+    highlightSelectionMatches: true,
+  }), [showLineNumbers]);
 
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] text-gray-900 dark:text-[#E0E0E0] transition-colors duration-200 min-w-0 min-h-0 overflow-hidden">
@@ -995,13 +1202,8 @@ export function VimEditor({
                     : (typeof window !== 'undefined' && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
               }
               extensions={extensions}
-              basicSetup={{
-                lineNumbers: showLineNumbers,
-                foldGutter: true,
-                highlightActiveLine: false,
-                highlightSelectionMatches: true,
-              }}
-              onChange={(val) => setContent(val)}
+              basicSetup={basicSetupOptions}
+              onChange={handleEditorChange}
               className="h-full"
             />
           </div>
@@ -1073,6 +1275,51 @@ export function VimEditor({
         )}
       </div>
 
+      {/* Proxy input for Vim commands on mobile */ }
+      <textarea
+        ref={proxyInputRef}
+        id="vim-hidden-textarea"
+        name="vim-hidden-textarea"
+        autoCapitalize="none"
+
+        autoCorrect="off"
+        spellCheck={false}
+        data-gramm="false"
+        data-form-type="other"
+        data-lpignore="true"
+        data-1p-ignore="true"
+        data-bwignore="true"
+        autoComplete="new-password"
+        className="opacity-0 fixed top-1/2 left-1/2 w-px h-px -z-10 resize-none p-0 m-0 border-0"
+        onInput={(e) => {
+          const val = e.currentTarget.value;
+          if (val) {
+            const cm = getCM(editorRef.current?.view);
+            if (cm && Vim) {
+              (window as any).isVimHandling = true;
+              for (const c of val) {
+                Vim.handleKey(cm, c, 'mapping');
+              }
+              (window as any).isVimHandling = false;
+            }
+            e.currentTarget.value = '';
+          }
+        }}
+        onKeyDown={(e) => {
+          const cm = getCM(editorRef.current?.view);
+          if (!cm || !Vim) return;
+          let key = '';
+          if (e.key === 'Backspace') key = '<Backspace>';
+          else if (e.key === 'Enter') key = '<Enter>';
+          else if (e.key === 'Escape') key = '<Esc>';
+          
+          if (key) {
+             (window as any).isVimHandling = true;
+             Vim.handleKey(cm, key, 'mapping');
+             (window as any).isVimHandling = false;
+          }
+        }}
+      />
       {/* Hidden elements for auxiliary keyboard to trigger keys in CodeMirror */}
       <div className="hidden">
         <button
@@ -1109,7 +1356,7 @@ export function VimEditor({
           {showModeMenu && (
             <>
               <div className="fixed inset-0 z-40 bg-black/10 dark:bg-black/40" onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowModeMenu(false); }} />
-              <div className="absolute bottom-6 left-0 z-50 min-w-[210px] bg-white dark:bg-[#1E2127] border border-gray-200 dark:border-[#2C313C] rounded-lg shadow-2xl py-1 text-gray-800 dark:text-[#ABB2BF] text-xs font-sans normal-case animate-in fade-in slide-in-from-bottom-2 duration-150" id="footer-mode-dropdown-menu">
+              <div className="absolute bottom-16 sm:bottom-6 left-0 z-50 min-w-[210px] bg-white dark:bg-[#1E2127] border border-gray-200 dark:border-[#2C313C] rounded-lg shadow-2xl py-1 text-gray-800 dark:text-[#ABB2BF] text-xs font-sans normal-case animate-in fade-in slide-in-from-bottom-2 duration-150" id="footer-mode-dropdown-menu">
                 <div className="px-3 py-1.5 text-[10px] uppercase font-bold text-gray-400 dark:text-zinc-500 tracking-wider border-b border-gray-100 dark:border-[#2C313C] flex items-center justify-between">
                   <span>{lang === 'it' ? 'Cambia Modalità' : 'Switch Mode'}</span>
                   <span className="text-[9px] font-mono text-emerald-600 dark:text-[#8AB4F8]">Vim</span>
@@ -1170,8 +1417,10 @@ export function VimEditor({
                   const cm = getCM(view);
                   if (cm && Vim) {
                     view.contentDOM.focus();
+                    (window as any).isVimHandling = true;
                     Vim.handleKey(cm, '<Esc>', 'mapping');
                     Vim.handleKey(cm, ':', 'mapping');
+                    (window as any).isVimHandling = false;
                   }
                 }
               }}
