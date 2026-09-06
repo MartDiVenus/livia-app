@@ -34,6 +34,7 @@ interface AuxiliaryKeyboardProps {
   onInsertSnippet: (text: string, offset: number) => void;
   isSoftKeyboardOpen?: boolean;
   onToggleSoftKeyboard?: (forceState?: boolean) => void;
+  onOpenAiAssistant?: () => void;
 }
 
 interface Snippet {
@@ -106,7 +107,8 @@ export function AuxiliaryKeyboard({
   lang,
   onInsertSnippet,
   isSoftKeyboardOpen = false,
-  onToggleSoftKeyboard
+  onToggleSoftKeyboard,
+  onOpenAiAssistant
 }: AuxiliaryKeyboardProps) {
   const snippets = getSnippets(format, lang);
 
@@ -152,6 +154,21 @@ export function AuxiliaryKeyboard({
                 <Scissors size={13} />
                 <span>{lang === 'it' ? 'Taglia/Elimina (d)' : 'Cut/Delete (d)'}</span>
               </button>
+              {onOpenAiAssistant && (
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    onOpenAiAssistant();
+                  }}
+                  className="px-3 py-1 bg-linear-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white font-bold rounded shadow-xs transition-all active:scale-95 cursor-pointer flex items-center gap-1.5"
+                  title={lang === 'it' ? 'Elabora testo selezionato con Assistente IA (Gemini)' : 'Process selected text with AI Assistant (Gemini)'}
+                  id="aux-visual-ai"
+                >
+                  <Sparkles size={13} />
+                  <span>{lang === 'it' ? 'IA Selezione' : 'AI Selection'}</span>
+                </button>
+              )}
               <button
                 type="button"
                 onPointerDown={(e) => { e.preventDefault(); onKeyPress('Escape'); }}
@@ -395,7 +412,7 @@ export function AuxiliaryKeyboard({
           <div className="flex items-center gap-1 bg-white dark:bg-[#0D0F12] p-1 rounded-lg border border-gray-200 dark:border-[#2D2D2D] shadow-xs">
             <button
               type="button"
-              onPointerDown={(e) => { e.preventDefault(); onKeyPress('/'); }}
+              onClick={(e) => { e.preventDefault(); onKeyPress('/'); }}
               className="min-h-[30px] px-2.5 py-0.5 text-xs font-mono font-bold text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded transition-colors cursor-pointer active:scale-95 flex items-center gap-1"
               title={lang === 'it' ? 'Cerca nel testo (/)' : 'Search text (/)'}
               id="aux-search"
@@ -428,15 +445,30 @@ export function AuxiliaryKeyboard({
           </div>
 
           {/* Command Mode colon (:) */}
-          {mode === 'normal' && (
+          <button
+            type="button"
+            onClick={(e) => { e.preventDefault(); onKeyPress(':'); }}
+            className="min-h-[34px] px-3 py-1 text-xs font-mono font-bold bg-white dark:bg-[#0D0F12] hover:bg-gray-50 dark:hover:bg-[#16181D] text-indigo-600 dark:text-indigo-400 rounded-lg border border-gray-200 dark:border-[#2D2D2D] active:scale-95 cursor-pointer"
+            title={lang === 'it' ? 'Riga di comando (:)' : 'Command line (:)'}
+            id="aux-colon"
+          >
+            :
+          </button>
+
+          {/* AI Assistant trigger (✨ IA) */}
+          {onOpenAiAssistant && (
             <button
               type="button"
-              onPointerDown={(e) => { e.preventDefault(); onKeyPress(':'); }}
-              className="min-h-[34px] px-3 py-1 text-xs font-mono font-bold bg-white dark:bg-[#0D0F12] hover:bg-gray-50 dark:hover:bg-[#16181D] text-indigo-600 dark:text-indigo-400 rounded-lg border border-gray-200 dark:border-[#2D2D2D] active:scale-95 cursor-pointer"
-              title={lang === 'it' ? 'Riga di comando (:)' : 'Command line (:)'}
-              id="aux-colon"
+              onClick={(e) => {
+                e.preventDefault();
+                onOpenAiAssistant();
+              }}
+              className="min-h-[34px] px-3 py-1 text-xs font-bold bg-linear-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white rounded-lg shadow-xs active:scale-95 cursor-pointer flex items-center gap-1.5 border border-emerald-500/40"
+              title={lang === 'it' ? 'Assistente IA LiViA (Google Gemini™)' : 'LiViA AI Assistant (Google Gemini™)'}
+              id="aux-ai-btn"
             >
-              :
+              <Sparkles size={13} />
+              <span>{lang === 'it' ? 'IA ✨' : 'AI ✨'}</span>
             </button>
           )}
 

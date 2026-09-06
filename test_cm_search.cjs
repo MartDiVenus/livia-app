@@ -1,2 +1,2 @@
 const { vim } = require('@replit/codemirror-vim');
-console.log(Object.keys(vim));
+console.log(vim);

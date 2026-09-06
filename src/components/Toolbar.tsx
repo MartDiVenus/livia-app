@@ -33,6 +33,7 @@ import {
   Sliders,
   Settings,
   Copy,
+  Sparkles,
   Image as ImageIcon
 } from 'lucide-react';
 import { Logo } from './Logo';
@@ -73,6 +74,7 @@ interface ToolbarProps {
   onOpenGuide?: () => void;
   isHeaderCollapsed?: boolean;
   setIsHeaderCollapsed?: (val: boolean | ((prev: boolean) => boolean)) => void;
+  onOpenAiAssistant?: () => void;
 }
 
 export function Toolbar({
@@ -107,7 +109,8 @@ export function Toolbar({
   sidebarTab,
   onOpenGuide,
   isHeaderCollapsed = false,
-  setIsHeaderCollapsed
+  setIsHeaderCollapsed,
+  onOpenAiAssistant
 }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importMenuOpen, setImportMenuOpen] = useState<boolean>(false);
@@ -131,18 +134,12 @@ export function Toolbar({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Automatically load template when selecting format from TIPO dropdown
+  // Update format and filename extension when selecting format from TIPO dropdown
   const handleFormatChange = (newFmt: FileFormat) => {
     setFormat(newFmt);
-    const templates = getTemplates(lang);
-    const template = templates[newFmt] || TEMPLATES[newFmt];
-    if (template) {
-      onLoadContent(template.content, template.name, template.format);
-    } else {
-      const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
-      const newName = `${baseName}.${newFmt}`;
-      setFilename(newName);
-    }
+    const baseName = filename.includes('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+    const newName = `${baseName}.${newFmt}`;
+    setFilename(newName);
   };
 
   // Create a new completely blank empty file
@@ -355,6 +352,19 @@ export function Toolbar({
 
           {/* Quick Collapse & Settings Buttons on Mobile Row 1 */}
           <div className="flex items-center gap-1 md:hidden shrink-0">
+            {onOpenAiAssistant && (
+              <button
+                type="button"
+                onClick={onOpenAiAssistant}
+                className="px-2 py-1.5 rounded-lg border border-emerald-500/40 bg-linear-to-r from-emerald-600 to-indigo-600 text-white font-bold text-xs flex items-center gap-1 shadow-xs active:scale-95 transition-all cursor-pointer"
+                title={lang === 'it' ? 'Assistente IA LiViA (Gemini™)' : 'LiViA AI Assistant (Gemini™)'}
+                id="mobile-header-ai-btn"
+              >
+                <Sparkles size={14} />
+                <span className="font-bold text-[11px]">IA</span>
+              </button>
+            )}
+
             {onOpenSettingsModal && (
               <button
                 type="button"
@@ -410,9 +420,10 @@ export function Toolbar({
               className="bg-transparent focus:outline-none cursor-pointer text-xs font-bold max-w-[130px] sm:max-w-none"
               id="template-select"
             >
-              <option value="" disabled className="dark:bg-[#16181D]">
-                {lang === 'it' ? 'Template...' : 'Template...'}
+              <option value="" className="dark:bg-[#16181D]">
+                {lang === 'it' ? 'Seleziona Template...' : 'Select Template...'}
               </option>
+              <option value="help" className="dark:bg-[#16181D]">{lang === 'it' ? 'Manuale LiViA (help.txt)' : 'LiViA Manual (help.txt)'}</option>
               <option value="txt" className="dark:bg-[#16181D]">Template TXT</option>
               <option value="md" className="dark:bg-[#16181D]">{lang === 'it' ? 'Guida MD' : 'MD Guide'}</option>
               <option value="docx" className="dark:bg-[#16181D]">{lang === 'it' ? 'Doc Word (DOCX)' : 'Word Doc (DOCX)'}</option>
@@ -691,6 +702,22 @@ export function Toolbar({
               >
                 <Keyboard size={15} />
                 <span className="inline">{lang === 'it' ? 'Scorciatoie' : 'Shortcuts'}</span>
+              </button>
+            )}
+
+            {onOpenAiAssistant && (
+              <button
+                type="button"
+                onClick={() => {
+                  onOpenAiAssistant();
+                  setMobileMenuOpen(false);
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-emerald-500/40 bg-linear-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white text-xs transition-all cursor-pointer font-bold shadow-xs active:scale-95"
+                title={lang === 'it' ? 'Assistente IA LiViA (Google Gemini™)' : 'LiViA AI Assistant (Google Gemini™)'}
+                id="toggle-ai-assistant-btn"
+              >
+                <Sparkles size={14} />
+                <span className="inline">{lang === 'it' ? 'IA (Gemini™)' : 'AI (Gemini™)'}</span>
               </button>
             )}
 

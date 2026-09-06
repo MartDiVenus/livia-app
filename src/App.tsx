@@ -214,7 +214,7 @@ export default function App() {
     }
   }, [aiProfiles]);
 
-  const handleAiCommand = async (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string) => void) => {
+  const handleAiCommand = async (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string, isUpdate?: boolean) => void) => {
     try {
       const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
       let systemInstruction: string | undefined = undefined;
@@ -226,22 +226,54 @@ export default function App() {
       
       const payload: any = { action, text: textToProcess, userApiKey, systemInstruction };
       if (action === 'translate') payload.targetLanguage = arg;
-      if (action === 'prompt') { payload.prompt = arg; payload.modelTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'gemini-3.6-flash' : 'gemini-3.6-flash'; }
+      if (action === 'prompt') { 
+        payload.prompt = arg; 
+        let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
+        if (storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
+          storedTier = 'flash';
+          if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+        }
+        payload.modelTier = storedTier; 
+      }
       if (action === 'latin') payload.theme = arg;
       
       showToast(lang === 'it' ? 'Elaborazione IA in corso...' : 'AI processing...', 'info');
-      const res = await fetch("/api/gemini/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (!res.ok) {
-        const errData = await res.json();
-        throw new Error(errData.error || "Errore API Gemini");
+      
+      // Insert placeholder
+      const placeholder = lang === 'it' ? '⏳ Elaborazione in corso...' : '⏳ Processing...';
+      onInsert(placeholder, false);
+      let replaced = false;
+
+      try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+          
+          const res = await fetch("/api/gemini/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+          if (!res.ok) {
+            let errData: any = {};
+            try { errData = await res.json(); } catch(err){}
+            const errMsg = errData.error || res.statusText || "Unknown";
+            onInsert("❌ Errore API: " + errMsg, true);
+            replaced = true;
+            throw new Error(errMsg);
+          }
+          const data = await res.json();
+          onInsert(data.result || (lang === 'it' ? '⚠️ Nessun risultato.' : '⚠️ No result.'), true);
+          replaced = true;
+          showToast(lang === 'it' ? 'Fatto!' : 'Done!', 'success');
+      } catch (innerE: any) {
+          console.error("Fetch Error:", innerE);
+          if (!replaced) {
+             onInsert("❌ Errore di connessione o timeout: " + innerE.message, true);
+          }
+          throw innerE;
       }
-      const data = await res.json();
-      onInsert(data.result);
-      showToast(lang === 'it' ? 'Fatto!' : 'Done!', 'success');
     } catch (e: any) {
       showToast(e.message || 'Errore AI', 'error');
     }
@@ -314,7 +346,6 @@ export default function App() {
     if (filename === 'help_figures.md') setContent(figuresFile.content);
     if (filename === 'help_tables.md') setContent(tablesFile.content);
     if (filename === 'help_ai.md') setContent(getHelpAiTemplate(newLang).content);
-    if (filename === 'help_ai.md') setContent(getHelpAiTemplate(newLang).content);
     if (filename === '.lvarc') setContent(lvarcFile.content);
     if (filename === 'example.txt') {
       const oldTxtIt = getTemplates('it')['txt'].content;
@@ -323,6 +354,81 @@ export default function App() {
         setContent(txtFile.content);
       }
     }
+    setFileSessionId(prev => prev + 1);
+  };
+
+  // Self-heal templates if previously corrupted by example.txt
+  useEffect(() => {
+    setVirtualFiles(prev => {
+      const templates = getTemplates(lang);
+      const exampleIt = getTemplates('it')['txt'].content;
+      const exampleEn = getTemplates('en')['txt'].content;
+      let changed = false;
+      const healed = prev.map(f => {
+        if (f.name === 'help.txt') {
+          const expectedHelp = getHelpTemplate(lang).content;
+          if (f.content === exampleIt || f.content === exampleEn) {
+            changed = true;
+            return { ...f, content: expectedHelp, format: 'txt' as FileFormat };
+          }
+        }
+        for (const [, tmpl] of Object.entries(templates)) {
+          if (f.name === tmpl.name && f.name !== 'example.txt' && f.name !== 'esempio.txt') {
+            if (f.content === exampleIt || f.content === exampleEn) {
+              changed = true;
+              return { ...f, content: tmpl.content, format: tmpl.format };
+            }
+          }
+        }
+        return f;
+      });
+      return changed ? healed : prev;
+    });
+  }, [lang]);
+
+  // If current active file is help.txt or a template that had example.txt content, heal active editor content
+  useEffect(() => {
+    const exampleIt = getTemplates('it')['txt'].content;
+    const exampleEn = getTemplates('en')['txt'].content;
+    if (filename === 'help.txt' && (content === exampleIt || content === exampleEn)) {
+      setContent(getHelpTemplate(lang).content);
+      setFileSessionId(prev => prev + 1);
+    }
+  }, [filename, content, lang]);
+
+  // Self-heal stale/deprecated AI model settings in localStorage (e.g. from older mobile sessions)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedModel = localStorage.getItem('livia_gemini_model');
+      if (savedModel && (savedModel.includes('2.5') || savedModel.includes('2.0') || savedModel.includes('1.5') || savedModel.includes('3.7'))) {
+        localStorage.setItem('livia_gemini_model', 'flash');
+      }
+      const savedDef = localStorage.getItem('livia_default_model');
+      if (savedDef && (savedDef.includes('2.5') || savedDef.includes('2.0') || savedDef.includes('1.5') || savedDef.includes('3.7'))) {
+        localStorage.setItem('livia_default_model', 'flash');
+      }
+    }
+  }, []);
+
+  const [activeAiModel, setActiveAiModel] = useState<'flash' | 'flash-lite' | 'pro'>(() => {
+    if (typeof window !== 'undefined') {
+      const stored = localStorage.getItem('livia_gemini_model');
+      if (stored === 'flash-lite' || stored === 'pro') return stored;
+    }
+    return 'flash';
+  });
+
+  const handleSelectAiModel = (m: 'flash' | 'flash-lite' | 'pro') => {
+    setActiveAiModel(m);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('livia_gemini_model', m);
+    }
+    showToast(
+      lang === 'it' 
+        ? `Modello impostato: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`
+        : `Model set: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`,
+      'info'
+    );
   };
 
   const [includePdfHeader, setIncludePdfHeader] = useState<boolean>(true);
@@ -1034,6 +1140,14 @@ export default function App() {
     }
   };
 
+  // Trigger opening the LiViA AI Assistant Modal
+  const handleOpenAiAssistant = () => {
+    const triggerBtn = document.getElementById('simulated-ai-trigger');
+    if (triggerBtn) {
+      triggerBtn.click();
+    }
+  };
+
   // State & handler for Gboard / System Keyboard Toggle
   const [isSoftKeyboardOpen, setIsSoftKeyboardOpen] = useState<boolean>(false);
 
@@ -1132,10 +1246,11 @@ export default function App() {
     setContent(newContent);
     setFilename(newName);
     setFormat(newFormat);
+    setFileSessionId(prev => prev + 1);
     setVirtualFiles(prev => {
       const existing = prev.find(f => f.name === newName);
       if (existing) {
-        return prev.map(f => f.name === newName ? { ...f, content: newContent } : f);
+        return prev.map(f => f.name === newName ? { ...f, content: newContent, format: newFormat } : f);
       } else {
         return [...prev, { name: newName, format: newFormat, content: newContent }];
       }
@@ -1204,6 +1319,7 @@ export default function App() {
           }
         }}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
+        onOpenAiAssistant={handleOpenAiAssistant}
       />
 
       {/* Main Workspace Frame */}
@@ -1213,25 +1329,70 @@ export default function App() {
         {/* Vim Editor Canvas Container */}
         <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] rounded-2xl border border-gray-200 dark:border-[#2D2D2D] shadow-sm overflow-hidden transition-all min-h-0 min-w-0">
           
-          {/* AI Profile Selector Header */}
-          {aiProfiles.length > 0 && (
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 dark:border-[#2D2D2D] bg-purple-50/50 dark:bg-purple-900/10">
-              <span className="text-[10px] font-bold text-purple-700 dark:text-purple-400 uppercase flex items-center gap-1.5">
-                <Sparkles size={12} />
-                {lang === 'it' ? 'Profilo AI Attivo:' : 'Active AI Profile:'}
-              </span>
-              <select
-                value={activeAiProfileId || ''}
-                onChange={(e) => setActiveAiProfileId(e.target.value || null)}
-                className="bg-transparent text-xs text-gray-700 dark:text-zinc-300 outline-none border-none cursor-pointer font-medium appearance-none min-w-[120px] text-right"
+          {/* AI Model & Profile Control Header Bar */}
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 dark:border-[#202530] bg-gray-50/90 dark:bg-[#12151B] text-xs shrink-0 flex-wrap gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleOpenAiAssistant}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-linear-to-r from-emerald-600 to-indigo-600 hover:from-emerald-500 hover:to-indigo-500 text-white font-bold text-[11px] shadow-xs cursor-pointer transition-all active:scale-95"
+                title={lang === 'it' ? 'Apri Assistente IA LiViA (Gemini)' : 'Open LiViA AI Assistant (Gemini)'}
+                id="ai-bar-open-btn"
               >
-                <option value="">{lang === 'it' ? '-- Nessuno --' : '-- None --'}</option>
-                {aiProfiles.map(p => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
+                <Sparkles size={12} />
+                <span>{lang === 'it' ? 'Assistente IA' : 'AI Assistant'}</span>
+              </button>
+
+              {/* Active Model Selector */}
+              <div className="flex items-center gap-1 bg-white dark:bg-[#1A1E26] border border-gray-200 dark:border-[#2C313C] rounded-lg px-2 py-0.5 shadow-2xs">
+                <span className="text-[10px] font-bold text-gray-500 dark:text-zinc-400 uppercase tracking-wider hidden sm:inline">
+                  {lang === 'it' ? 'Modello:' : 'Model:'}
+                </span>
+                <select
+                  value={activeAiModel}
+                  onChange={(e) => handleSelectAiModel(e.target.value as any)}
+                  className="bg-transparent text-[11px] font-bold text-gray-800 dark:text-zinc-200 outline-none cursor-pointer border-none"
+                  title={lang === 'it' ? 'Seleziona modello Gemini' : 'Select Gemini Model'}
+                  id="ai-bar-model-select"
+                >
+                  <option value="flash">⚡ 3.8 Flash (Free Tier)</option>
+                  <option value="flash-lite">🚀 3.1 Flash-Lite (Veloce)</option>
+                  <option value="pro">🧠 3.1 Pro (Avanzato)</option>
+                </select>
+              </div>
+
+              {/* AI Profile Selector (if available) */}
+              {aiProfiles.length > 0 && (
+                <div className="flex items-center gap-1 bg-purple-50/80 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/40 rounded-lg px-2 py-0.5">
+                  <span className="text-[10px] font-bold text-purple-700 dark:text-purple-400 uppercase tracking-wider hidden sm:inline">
+                    Gem:
+                  </span>
+                  <select
+                    value={activeAiProfileId || ''}
+                    onChange={(e) => setActiveAiProfileId(e.target.value || null)}
+                    className="bg-transparent text-[11px] font-bold text-purple-800 dark:text-purple-300 outline-none cursor-pointer border-none"
+                  >
+                    <option value="">{lang === 'it' ? 'Standard' : 'Standard'}</option>
+                    {aiProfiles.map(p => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
-          )}
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsSettingsModalOpen(true)}
+                className="text-[11px] text-gray-500 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-zinc-100 flex items-center gap-1 cursor-pointer transition-colors"
+                title={lang === 'it' ? 'Gestisci API Key e modelli nelle impostazioni' : 'Manage API Key and models in settings'}
+              >
+                <Settings size={12} />
+                <span className="hidden sm:inline">{lang === 'it' ? 'Configura Chiave' : 'Configure Key'}</span>
+              </button>
+            </div>
+          </div>
 
           <VimEditor
 
@@ -1251,6 +1412,7 @@ export default function App() {
             onSyncClipboard={handleSyncClipboard}
             externalClipboardText={handleReadClipboard}
             showLineNumbers={showLineNumbers}
+            setShowLineNumbers={setShowLineNumbers}
             wordWrap={wordWrap}
             editorFontSize={editorFontSize}
             setEditorFontSize={setEditorFontSize}
@@ -1304,6 +1466,7 @@ export default function App() {
                   setContent(existing.content);
                   const ext = existing.name.split('.').pop()?.toLowerCase();
                   setFormat(ext === 'md' ? 'md' : ext === 'json' ? 'json' : ext === 'html' ? 'html' : 'txt');
+                  setFileSessionId(prev => prev + 1);
                   return { success: true, message: lang === 'it' ? `Tornato a "${existing.name}"` : `Returned to "${existing.name}"` };
                 }
               }
@@ -1312,6 +1475,7 @@ export default function App() {
               setFilename('');
               setContent('');
               setFormat('txt');
+              setFileSessionId(prev => prev + 1);
               return { success: true, message: lang === 'it' ? 'Editor svuotato' : 'Editor cleared', isEmptyHistory: true };
             }}
             onTearFileState={(rawTargetName) => {
@@ -1371,6 +1535,7 @@ export default function App() {
                 setContent(sanitizeText(existing.content));
                 setFilename(existing.name);
                 setFormat(existing.format);
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? `Aperto file "${existing.name}".` : `Opened file "${existing.name}".`, 'info');
                 return { found: true, name: existing.name };
               } else {
@@ -1388,14 +1553,12 @@ export default function App() {
                 setContent(newContent);
                 setFilename(baseName);
                 setFormat(newFormat);
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? `Creato e aperto nuovo file vuoto "${baseName}".` : `Created and opened new empty file "${baseName}".`, 'info');
                 return { found: false, name: baseName };
               }
             }}
             onShowHelp={(topic) => {
-              setShowCheatsheet(true);
-              setSidebarTab('guide');
-              
               const normTopic = (topic || '').toLowerCase().trim();
 
               const scrollToSection = (targetId: string) => {
@@ -1416,10 +1579,10 @@ export default function App() {
                 const colFile = getHelpColorsTemplate(lang);
                 setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_colors.md'), colFile]);
-                
-                        setContent(colFile.content);
-                        setFilename('help_colors.md');
+                setContent(colFile.content);
+                setFilename('help_colors.md');
                 setFormat('md');
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? 'Aperta guida "Formattazione Colori" (:he color md)!' : 'Opened "Color Formatting" guide (:he color md)!', 'info');
               } 
               // 2. Figure / Image guide: :he figure md, :he figures md
@@ -1427,10 +1590,10 @@ export default function App() {
                 const figFile = getHelpFiguresTemplate(lang);
                 setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_figures.md'), figFile]);
-                
-                        setContent(figFile.content);
-                        setFilename('help_figures.md');
+                setContent(figFile.content);
+                setFilename('help_figures.md');
                 setFormat('md');
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? 'Aperta guida "Immagini & Figure con Didascalia" (:he figure md)!' : 'Opened "Images & Figures with Captions" guide (:he figure md)!', 'info');
               } 
               // 3. Table guide: :he table md, :he tables md
@@ -1438,10 +1601,10 @@ export default function App() {
                 const tabFile = getHelpTablesTemplate(lang);
                 setFileHistory(prev => [...prev, filename]);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help_tables.md'), tabFile]);
-                
-                        setContent(tabFile.content);
-                        setFilename('help_tables.md');
+                setContent(tabFile.content);
+                setFilename('help_tables.md');
                 setFormat('md');
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? 'Aperta guida "Costruzione Tabelle" (:he table md)!' : 'Opened "Table Construction" guide (:he table md)!', 'info');
               } 
               // 4. AI guide: :he ai, :he gem
@@ -1452,6 +1615,7 @@ export default function App() {
                 setContent(aiFile.content);
                 setFilename('help_ai.md');
                 setFormat('md');
+                setFileSessionId(prev => prev + 1);
                 showToast(lang === 'it' ? 'Aperta guida "Gemini AI" (:he ai)!' : 'Opened "Gemini AI" guide (:he ai)!', 'info');
               }
               // 5. Gemini API Key section
@@ -1487,15 +1651,15 @@ export default function App() {
                 scrollToSection('guide-about-section');
                 showToast(lang === 'it' ? 'Aperta "Presentazione Ufficiale LiViA"!' : 'Opened "Official LiViA Presentation"!', 'info');
               }
-              // 10. Default general help guide
+              // 10. Default general help guide (:he or :help directly opens help.txt)
               else {
                 const helpFile = getHelpTemplate(lang);
                 setVirtualFiles(prev => [...prev.filter(f => f.name !== 'help.txt'), helpFile]);
                 setContent(helpFile.content);
                 setFilename('help.txt');
                 setFormat('txt');
-                scrollToSection('guide-about-section');
-                showToast(lang === 'it' ? 'Aperto file di guida "help.txt" e pannello manuale!' : 'Opened "help.txt" guide file and manual panel!', 'info');
+                setFileSessionId(prev => prev + 1);
+                showToast(lang === 'it' ? 'Aperto file di guida "help.txt"!' : 'Opened "help.txt" guide file!', 'info');
               }
             }}
             lang={lang}
@@ -1506,12 +1670,16 @@ export default function App() {
             isSoftKeyboardOpen={isSoftKeyboardOpen}
             onSoftKeyboardChange={setIsSoftKeyboardOpen}
             onAiCommand={handleAiCommand}
+            aiProfiles={aiProfiles}
+            activeAiProfileId={activeAiProfileId}
+            setActiveAiProfileId={setActiveAiProfileId}
+            onOpenAiProfilesModal={() => setIsAiProfilesModalOpen(true)}
           />
         </div>
 
         {/* Collapsible Command Guide & Typographical Test Pane */}
         {showCheatsheet && (
-          <div className="flex flex-col shrink-0 relative lg:self-start">
+          <div id="livia-sidebar" className="flex flex-col shrink-0 relative lg:self-start">
             {/* Draggable Resizer Bar Handle (North-South Vertical for Height - Top Edge) */}
             <div
               onMouseDown={(e) => {
@@ -1775,6 +1943,7 @@ export default function App() {
                             setContent(file.content);
                             setFilename(file.name);
                             setFormat(file.format);
+                            setFileSessionId(prev => prev + 1);
                             showToast(lang === 'it' ? `Aperto: ${file.name}` : `Opened: ${file.name}`, 'info');
                           }}
                           className={`flex items-center justify-between p-2 rounded-xl transition-all cursor-pointer border ${
@@ -1800,6 +1969,7 @@ export default function App() {
                                     setContent(rem[0].content);
                                     setFilename(rem[0].name);
                                     setFormat(rem[0].format);
+                                    setFileSessionId(prev => prev + 1);
                                   }
                                 }
                               }}
@@ -2422,6 +2592,7 @@ export default function App() {
               onInsertSnippet={handleInsertSnippet}
               isSoftKeyboardOpen={isSoftKeyboardOpen}
               onToggleSoftKeyboard={handleToggleSoftKeyboard}
+              onOpenAiAssistant={handleOpenAiAssistant}
             />
           </div>
         </div>

@@ -17,7 +17,12 @@ import {
   Globe, 
   Hash, 
   Code,
-  Sliders
+  Sliders,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle2,
+  Zap,
+  Cpu
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -53,13 +58,58 @@ export function SettingsModal({
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [defaultModel, setDefaultModel] = useState<'flash' | 'pro'>('flash');
   const [activeTab, setActiveTab] = useState<'ai' | 'editor' | 'misc'>('ai');
+  const [isTestingKey, setIsTestingKey] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string; isCloudDisabled?: boolean } | null>(null);
+
+  const handleTestKey = async () => {
+    setIsTestingKey(true);
+    setTestResult(null);
+    try {
+      const keyToTest = apiKeyInput.trim();
+      const queryParam = keyToTest ? `?key=${encodeURIComponent(keyToTest)}` : '';
+      const start = Date.now();
+      const res = await fetch(`/api/gemini/status${queryParam}`);
+      const data = await res.json();
+      const elapsed = Date.now() - start;
+      if (data.ok) {
+        setTestResult({
+          ok: true,
+          message: lang === 'it' 
+            ? `API Operativa (${elapsed}ms)! Modello attivo: ${data.model} (Tier: ${data.modelTier})`
+            : `API Working (${elapsed}ms)! Active model: ${data.model} (Tier: ${data.modelTier})`
+        });
+      } else {
+        setTestResult({
+          ok: false,
+          message: data.error || (lang === 'it' ? 'Errore test connessione' : 'Connection test error'),
+          isCloudDisabled: data.isCloudDisabled
+        });
+      }
+    } catch (e: any) {
+      setTestResult({
+        ok: false,
+        message: e?.message || (lang === 'it' ? 'Errore di rete' : 'Network error')
+      });
+    } finally {
+      setIsTestingKey(false);
+    }
+  };
 
   useEffect(() => {
     if (isOpen && typeof window !== 'undefined') {
       const savedKey = localStorage.getItem('livia_custom_gemini_key') || '';
       setApiKeyInput(savedKey);
-      const savedModel = (localStorage.getItem('livia_default_model') as 'flash-lite' | 'flash' | 'pro' | 'pro-thinking') || 'flash';
-      setDefaultModel(savedModel);
+      const rawModel = (localStorage.getItem('livia_gemini_model') || localStorage.getItem('livia_default_model') || 'flash');
+      let sanitizedModel: 'flash-lite' | 'flash' | 'pro' | 'pro-thinking' = 'flash';
+      if (rawModel === 'flash-lite' || rawModel === 'pro' || rawModel === 'pro-thinking') {
+        sanitizedModel = rawModel;
+      }
+      if (typeof rawModel === 'string' && (rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5') || rawModel.includes('3.7'))) {
+        sanitizedModel = 'flash';
+        localStorage.setItem('livia_gemini_model', 'flash');
+        localStorage.setItem('livia_default_model', 'flash');
+      }
+      setDefaultModel(sanitizedModel);
     }
   }, [isOpen]);
 
@@ -100,6 +150,7 @@ export function SettingsModal({
   const handleModelChange = (model: 'flash-lite' | 'flash' | 'pro' | 'pro-thinking') => {
     setDefaultModel(model);
     localStorage.setItem('livia_default_model', model);
+    localStorage.setItem('livia_gemini_model', model);
     showToast(
       lang === 'it'
         ? `Modello AI predefinito impostato su Gemini ${model.toUpperCase()}`
@@ -241,26 +292,79 @@ export function SettingsModal({
                     >
                       {lang === 'it' ? 'Salva Chiave' : 'Save Key'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleTestKey}
+                      disabled={isTestingKey}
+                      className="px-3 py-2 bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1 border border-indigo-200 dark:border-indigo-800/40"
+                      title={lang === 'it' ? 'Verifica connessione con Gemini API' : 'Test connection with Gemini API'}
+                    >
+                      <RefreshCw size={12} className={isTestingKey ? "animate-spin" : ""} />
+                      <span>{isTestingKey ? (lang === 'it' ? 'Test...' : 'Testing...') : (lang === 'it' ? 'Test API' : 'Test API')}</span>
+                    </button>
                     {apiKeyInput && (
                       <button
                         type="button"
                         onClick={handleClearApiKey}
                         className="px-3 py-2 bg-red-100 dark:bg-red-950/30 text-red-600 dark:text-red-400 hover:bg-red-200 dark:hover:bg-red-900/40 text-xs font-bold rounded-xl transition-colors cursor-pointer flex items-center gap-1"
+                        title={lang === 'it' ? 'Rimuovi chiave' : 'Remove key'}
                       >
                         <Trash2 size={14} />
                       </button>
                     )}
                   </div>
+
+                  {/* Diagnostic Test Feedback */}
+                  {testResult && (
+                    <div className={`p-2.5 rounded-xl text-xs flex items-start gap-2 animate-in fade-in ${
+                      testResult.ok 
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300' 
+                        : 'bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
+                    }`}>
+                      {testResult.ok ? (
+                        <CheckCircle2 size={14} className="text-emerald-500 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle size={14} className="text-amber-500 shrink-0 mt-0.5" />
+                      )}
+                      <div className="flex-1 text-[11px] leading-relaxed">
+                        <p className="font-semibold">{testResult.message}</p>
+                        {testResult.isCloudDisabled && (
+                          <div className="mt-2">
+                            <a
+                              href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg font-bold text-[10px]"
+                            >
+                              <span>{lang === 'it' ? 'Abilita Generative Language API in Google Cloud' : 'Enable Generative Language API in Cloud'}</span>
+                              <ExternalLink size={10} />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="pt-2 flex justify-center">
+
+                {/* Helpful Cloud & AI Studio Links */}
+                <div className="pt-2 flex flex-col items-center gap-1.5 text-center">
                   <a
                     href="https://aistudio.google.com/app/apikey"
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 text-[11px] font-bold text-blue-600 dark:text-blue-400 hover:underline hover:text-blue-800 dark:hover:text-blue-300 transition-colors"
                   >
-                    <span>{lang === 'it' ? 'Ottieni una API Key gratuita' : 'Get a free API Key'}</span>
+                    <span>{lang === 'it' ? '👉 Crea una nuova API Key gratuita su Google AI Studio' : '👉 Create a free API Key on Google AI Studio'}</span>
                     <ExternalLink size={12} />
+                  </a>
+                  <a
+                    href="https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-[10px] text-gray-500 dark:text-zinc-400 hover:underline hover:text-gray-800 dark:hover:text-zinc-200 transition-colors"
+                  >
+                    <span>{lang === 'it' ? '💡 Chiave da Google Cloud? Abilita Generative Language API qui' : '💡 Key from Google Cloud? Enable Generative Language API here'}</span>
+                    <ExternalLink size={10} />
                   </a>
                 </div>
               </div>
@@ -274,66 +378,52 @@ export function SettingsModal({
                 <div className="flex flex-col gap-2">
                   <button
                     onClick={() => handleModelChange('flash-lite')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       defaultModel === 'flash-lite'
                         ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
-                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100">
-                      <span>3.5 Flash-Lite</span>
+                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
+                      <span>🚀 3.1 Flash-Lite</span>
                       {defaultModel === 'flash-lite' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Risposte più rapide.' : 'Fastest responses.'}
+                      {lang === 'it' ? 'Ultrarapido, ideale per modifiche veloci e bassa latenza.' : 'Ultra-fast, lowest latency.'}
                     </p>
                   </button>
+
                   <button
                     onClick={() => handleModelChange('flash')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       defaultModel === 'flash'
                         ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
-                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100">
-                      <span>3.7 Flash</span>
+                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
+                      <span>⚡ 3.8 Flash (Consigliato)</span>
                       {defaultModel === 'flash' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Aiuto completo.' : 'Comprehensive assistance.'}
+                      {lang === 'it' ? 'Massimo equilibrio tra accuratezza e velocità (gemini-3.8-flash).' : 'Optimal balance between accuracy and speed (gemini-3.8-flash).'}
                     </p>
                   </button>
+
                   <button
                     onClick={() => handleModelChange('pro')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       defaultModel === 'pro'
                         ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
-                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100">
-                      <span>3.1 Pro</span>
+                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
+                      <span>🧠 3.1 Pro (Avanzato)</span>
                       {defaultModel === 'pro' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Ragionamento avanzato.' : 'Advanced reasoning.'}
-                    </p>
-                  </button>
-                  <button
-                    onClick={() => handleModelChange('pro-thinking')}
-                    className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
-                      defaultModel === 'pro-thinking'
-                        ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
-                        : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100">
-                      <span>{lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)'}</span>
-                      {defaultModel === 'pro-thinking' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
-                    </div>
-                    <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Risoluzione di problemi complessi (Ragionamento esteso).' : 'Complex problem solving (Extended reasoning).'}
+                      {lang === 'it' ? 'Ragionamento profondo e sintassi complessa (gemini-3.1-pro).' : 'Deep reasoning and complex syntax (gemini-3.1-pro).'}
                     </p>
                   </button>
                 </div>

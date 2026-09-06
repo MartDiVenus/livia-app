@@ -19,21 +19,25 @@ async function startServer() {
     return new GoogleGenAI({ apiKey });
   }
 
-  // API Route for Gemini AI operations (translation, content prompting, latin generation)
+  // API Route for Gemini AI operations (translation, content prompting, latin generation, ping)
   app.post("/api/gemini/generate", async (req, res) => {
     const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey, systemInstruction } = req.body;
 
     async function generateWithModelFallback(contents: string, sysInst?: string, configOverrides: any = {}): Promise<any> {
-      // Valid up-to-date models for @google/genai SDK
-      let modelsToTry: string[] = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-flash-latest"];
-      if (modelTier === 'flash-lite') {
-        modelsToTry = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.6-flash"];
-      } else if (modelTier === 'pro') {
-        modelsToTry = ["gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-2.5-flash"];
-      } else if (modelTier === 'pro-thinking') {
-        modelsToTry = ["gemini-3.1-pro-thinking-preview", "gemini-3.6-pro", "gemini-3.1-pro-preview"];
-      } else if (modelTier && modelTier.startsWith('gemini-')) {
-        modelsToTry = [modelTier, "gemini-3.6-flash", "gemini-2.5-flash"];
+      // Clean up tier if it points to deprecated 2.5, 2.0, 1.5, or invalid 3.7
+      let tier = (modelTier || 'flash').trim();
+      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7')) {
+        tier = 'flash';
+      }
+
+      // Valid models in current @google/genai SDK (per system guidelines)
+      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      if (tier === 'flash-lite') {
+        modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+      } else if (tier === 'pro' || tier === 'pro-thinking') {
+        modelsToTry = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      } else if (tier.startsWith('gemini-')) {
+        modelsToTry = [tier, "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
       }
       
       const clientsToTry: { client: any; isCustom: boolean }[] = [];
@@ -56,7 +60,7 @@ async function startServer() {
           try {
             const config = { ...(sysInst ? { systemInstruction: sysInst } : {}), ...configOverrides };
             const res = await client.models.generateContent({ model: m, contents, config });
-            return res;
+            return { res, usedModel: m };
           } catch (err: any) {
             lastError = err;
             console.warn(`Attempt with ${isCustom ? 'custom key' : 'system Secret key'} and model ${m} failed:`, err?.message || err);
@@ -67,27 +71,31 @@ async function startServer() {
     }
 
     try {
+      if (action === "ping") {
+        const { usedModel } = await generateWithModelFallback("Hello, reply with OK", undefined, { maxOutputTokens: 10 });
+        return res.json({ result: "OK", status: "online", model: usedModel });
+      }
+
       if (action === "translate") {
-        const response = await generateWithModelFallback(`Translate the following text into ${targetLanguage || "Italian"}. Return ONLY the translated text. Maintain the original formatting, line breaks, and style as much as possible. Do not add any conversational intro/outro or explanations.\n\nText to translate:\n${text}`, systemInstruction);
+        const { res: response } = await generateWithModelFallback(`Translate the following text into ${targetLanguage || "Italian"}. Return ONLY the translated text. Maintain the original formatting, line breaks, and style as much as possible. Do not add any conversational intro/outro or explanations.\n\nText to translate:\n${text}`, systemInstruction);
         return res.json({ result: response.text });
       }
 
       if (action === "prompt") {
-        const response = await generateWithModelFallback(`You are an expert text and code assistant embedded inside LiViA Editor™, a lightweight text editor. 
+        const promptString = `You are an expert text and code assistant embedded inside LiViA Editor™, a lightweight text editor. 
 Your task is to process the following text according to the user instructions: "${prompt}". 
 If the instruction asks to rewrite, edit, clean, summarize, or refactor, return ONLY the resulting text. 
 If the instruction is a question or request for information, output the answer cleanly formatted. 
-Do not add meta-commentary unless requested.
-
-Original text:
-${text}`, systemInstruction);
+Do not add meta-commentary unless requested.${text ? `\n\nOriginal text:\n${text}` : ''}`;
+        
+        const { res: response } = await generateWithModelFallback(promptString, systemInstruction);
         return res.json({ result: response.text });
       }
 
       if (action === "latin") {
         const searchTheme = theme && theme.trim() !== 'random' ? `themed around "${theme}"` : "completely random";
         const seed = Math.floor(Math.random() * 1000000);
-        const response = await generateWithModelFallback(`Provide a famous or elegant Latin locution/phrase ${searchTheme}. 
+        const { res: response } = await generateWithModelFallback(`Provide a famous or elegant Latin locution/phrase ${searchTheme}. 
 This is random execution #${seed}. Please avoid the most common mainstream ones (like Carpe Diem, Veni Vidi Vici, or Alea Iacta Est) unless specifically requested. Choose something highly unique, profound, or rare from Latin literature, law, or philosophy.
 
 Return the output in Italian, formatted exactly as a clean block of lines as follows:
@@ -113,7 +121,16 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
         // Not JSON
       }
 
-      if (errMsg.includes("limit: 0") || errMsg.includes("limit:0")) {
+      const isCloudEnableError = 
+        errMsg.includes("Generative Language API has not been used in project") || 
+        errMsg.includes("it is disabled") || 
+        errMsg.includes("SERVICE_DISABLED") || 
+        errMsg.includes("has not been enabled") ||
+        (errMsg.includes("PERMISSION_DENIED") && (errMsg.includes("generativelanguage") || errMsg.includes("Cloud")));
+
+      if (isCloudEnableError) {
+        errMsg = "L'API Generative Language (Gemini™) non è abilitata nel progetto Google Cloud associato alla tua chiave. Per abilitarla con 1 clic: 1) Visita https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com e clicca su 'Abilita' (Enable). Oppure 2) Crea una chiave gratuita da zero su https://aistudio.google.com/app/apikey selezionando 'Create API key in new project' (Crea in un nuovo progetto).";
+      } else if (errMsg.includes("limit: 0") || errMsg.includes("limit:0")) {
         if (userApiKey && userApiKey.trim() !== "") {
           errMsg = "La tua API Key in Google AI Studio è associata a un progetto Google Cloud con Quota Gratuita impostata a 0 (limit: 0). Per risolvere: vai su https://aistudio.google.com/app/apikey, clicca su 'Create API key' e seleziona 'Create API key in new project' (Crea in un nuovo progetto). Poi copia la nuova chiave e incollala nelle Impostazioni dell'editor.";
         } else {
@@ -121,18 +138,88 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
         }
       } else if (errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("prepayment credits") || errMsg.includes("Quota") || errMsg.includes("quota")) {
         if (userApiKey && userApiKey.trim() !== "") {
-          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o verifica il tuo piano su Google AI Studio.";
+          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o passa a un modello più leggero (es. Flash o Flash-Lite).";
         } else {
           errMsg = "Quota Gemini API esaurita per la chiave di sistema condivisa. Inserisci la tua API Key personale nelle Impostazioni dell'editor (icona ingranaggio) per procedere senza limiti.";
         }
       } else if (errMsg.includes("503") || errMsg.includes("UNAVAILABLE") || errMsg.includes("service is currently unavailable") || errMsg.includes("overloaded")) {
-        errMsg = "Il servizio Gemini API è temporaneamente sovraccarico o in manutenzione. Riprova tra pochissimi secondi.";
+        errMsg = "Il modello Gemini API è attualmente impegnato o sovraccarico (errore 503/alta richiesta). Si prega di riprovare tra qualche secondo.";
       } else if (errMsg.includes("API key not valid") || errMsg.includes("INVALID_ARGUMENT") || errMsg.includes("401")) {
         errMsg = "Chiave API Gemini non valida. Verifica di aver copiato correttamente la chiave da Google AI Studio e reincollala nelle Impostazioni.";
       }
 
       return res.status(500).json({ 
         error: errMsg || "Errore durante la comunicazione con Gemini™ API."
+      });
+    }
+  });
+
+  // Diagnostic health check for Gemini API status and active configuration
+  app.get("/api/gemini/status", async (req, res) => {
+    const userApiKey = typeof req.query.key === 'string' ? req.query.key.trim() : undefined;
+    const hasSystemKey = !!(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim() !== '');
+    const hasCustomKey = !!(userApiKey && userApiKey !== '');
+
+    if (!hasSystemKey && !hasCustomKey) {
+      return res.json({
+        ok: false,
+        error: "Nessuna chiave API Gemini configurata.",
+        hasSystemKey: false,
+        hasCustomKey: false
+      });
+    }
+
+    try {
+      const apiKeyToTest = hasCustomKey ? userApiKey : process.env.GEMINI_API_KEY;
+      const client = new GoogleGenAI({ apiKey: apiKeyToTest! });
+      const testModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      let activeModel = "gemini-3.8-flash";
+      let succeeded = false;
+      let lastErr: any = null;
+
+      for (const m of testModels) {
+        try {
+          await client.models.generateContent({
+            model: m,
+            contents: "Ping",
+            config: { maxOutputTokens: 5 }
+          });
+          activeModel = m;
+          succeeded = true;
+          break;
+        } catch (e: any) {
+          lastErr = e;
+        }
+      }
+
+      if (succeeded) {
+        return res.json({
+          ok: true,
+          model: activeModel,
+          hasSystemKey,
+          hasCustomKey,
+          keySource: hasCustomKey ? 'custom' : 'system'
+        });
+      }
+
+      throw lastErr;
+    } catch (err: any) {
+      const msg = err?.message || String(err);
+      const isCloudDisabled = 
+        msg.includes("Generative Language API has not been used in project") || 
+        msg.includes("it is disabled") || 
+        msg.includes("SERVICE_DISABLED") ||
+        (msg.includes("PERMISSION_DENIED") && msg.includes("generativelanguage"));
+
+      return res.json({
+        ok: false,
+        error: msg,
+        isCloudDisabled,
+        cloudEnableUrl: "https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com",
+        aiStudioUrl: "https://aistudio.google.com/app/apikey",
+        hasSystemKey,
+        hasCustomKey,
+        keySource: hasCustomKey ? 'custom' : 'system'
       });
     }
   });

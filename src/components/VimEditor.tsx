@@ -5,8 +5,7 @@ import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
 import { EditorView, keymap } from '@codemirror/view';
-import { Prec, EditorState, Transaction, StateField } from '@codemirror/state';
-import { Decoration, DecorationSet } from '@codemirror/view';
+import { Prec, EditorState, Transaction } from '@codemirror/state';
 import { insertTab } from '@codemirror/commands';
 import { foldService, foldCode, unfoldCode } from '@codemirror/language';
 import { cpp } from '@codemirror/lang-cpp';
@@ -24,9 +23,11 @@ import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { go } from '@codemirror/legacy-modes/mode/go';
 import { kotlin } from '@codemirror/legacy-modes/mode/clike';
 
-import { VimMode, FileFormat } from '../types';
+import { VimMode, FileFormat, AiProfile } from '../types';
+import { registerVimCommands } from '../lib/vimCommands';
 import { Code, Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
 import { renderRichPreviewContent } from '../utils/previewRenderer';
+import { AiAssistantModal } from './AiAssistantModal';
 
 interface VimEditorProps {
   content: string;
@@ -38,6 +39,7 @@ interface VimEditorProps {
   onSyncClipboard: (yankText: string) => void;
   externalClipboardText: () => Promise<string>;
   showLineNumbers: boolean;
+  setShowLineNumbers?: (val: boolean) => void;
   wordWrap: boolean;
   editorFontSize: number;
   setEditorFontSize?: (val: number) => void;
@@ -49,7 +51,7 @@ interface VimEditorProps {
   onTearFileState?: (target: string) => { found: boolean; name: string; content?: string };
   onCloseFileState?: (force: boolean) => { success: boolean; message: string; isEmptyHistory?: boolean };
   onShowHelp?: (topic?: string) => void;
-  onAiCommand?: (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string) => void) => Promise<void>;
+  onAiCommand?: (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string, isUpdate?: boolean) => void) => Promise<void>;
   lang?: 'it' | 'en';
   setLang?: (lang: 'it' | 'en') => void;
   onOpenGoogleDocsModal?: () => void;
@@ -57,6 +59,10 @@ interface VimEditorProps {
   onModeChange?: (mode: VimMode) => void;
   isSoftKeyboardOpen?: boolean;
   onSoftKeyboardChange?: (isOpen: boolean) => void;
+  aiProfiles?: AiProfile[];
+  activeAiProfileId?: string | null;
+  setActiveAiProfileId?: (id: string | null) => void;
+  onOpenAiProfilesModal?: () => void;
 }
 
 export function VimEditor({
@@ -69,6 +75,7 @@ export function VimEditor({
   onSyncClipboard,
   externalClipboardText,
   showLineNumbers,
+  setShowLineNumbers,
   wordWrap,
   editorFontSize,
   setEditorFontSize,
@@ -87,7 +94,11 @@ export function VimEditor({
   onOpenSettingsModal,
   onModeChange,
   isSoftKeyboardOpen,
-  onSoftKeyboardChange
+  onSoftKeyboardChange,
+  aiProfiles,
+  activeAiProfileId,
+  setActiveAiProfileId,
+  onOpenAiProfilesModal
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
   const proxyInputRef = useRef<HTMLTextAreaElement>(null);
@@ -96,11 +107,215 @@ export function VimEditor({
   useEffect(() => {
     setContentRef.current = setContent;
   }, [setContent]);
-  const handleEditorChange = useCallback((val) => {
+
+  // State for AI Assistant Modal (optimized for mobile touch screens)
+  const [isAiModalOpen, setIsAiModalOpen] = useState(false);
+  const [aiModalContext, setAiModalContext] = useState<{
+    selectionText: string;
+    hasSelection: boolean;
+    docLength: number;
+    selFrom?: number;
+    selTo?: number;
+  }>({ selectionText: '', hasSelection: false, docLength: 0 });
+
+  const handleOpenAiModal = useCallback(() => {
+    const view = editorRef.current?.view;
+    if (view) {
+      const sel = view.state.selection.main;
+      let hasSel = !sel.empty;
+      let selText = hasSel ? view.state.sliceDoc(sel.from, sel.to) : '';
+      let selFrom = sel.from;
+      let selTo = sel.to;
+
+      // If no CodeMirror selection, check Vim marks '<' and '>'
+      const cm = getCM(view);
+      if (!hasSel && (cm as any)?.state?.vim?.marks) {
+        try {
+          const mStart = (cm as any).state.vim.marks['<']?.find?.();
+          const mEnd = (cm as any).state.vim.marks['>']?.find?.();
+          if (mStart && mEnd) {
+            let s = mStart;
+            let e = mEnd;
+            if (s.line > e.line || (s.line === e.line && s.ch > e.ch)) {
+              s = mEnd;
+              e = mStart;
+            }
+            const rangeText = (cm as any).getRange(s, { line: e.line, ch: e.ch + 1 });
+            if (rangeText && rangeText.length > 0) {
+              hasSel = true;
+              selText = rangeText;
+              const startLine = view.state.doc.line(s.line + 1);
+              const endLine = view.state.doc.line(e.line + 1);
+              selFrom = Math.min(startLine.from + s.ch, view.state.doc.length);
+              selTo = Math.min(endLine.from + e.ch + 1, view.state.doc.length);
+            }
+          }
+        } catch {}
+      }
+
+      setAiModalContext({
+        selectionText: selText,
+        hasSelection: hasSel,
+        docLength: view.state.doc.length,
+        selFrom,
+        selTo
+      });
+    } else {
+      setAiModalContext({
+        selectionText: '',
+        hasSelection: false,
+        docLength: content.length
+      });
+    }
+    setIsAiModalOpen(true);
+  }, [content.length]);
+
+  const handleExecuteAiModal = async (
+    action: 'prompt' | 'translate' | 'latin',
+    arg: string,
+    targetMode: 'selection' | 'document' | 'cursor',
+    modelTier?: 'flash' | 'flash-lite' | 'pro'
+  ) => {
+    const view = editorRef.current?.view;
+    if (!view) throw new Error(lang === 'it' ? "Editor non pronto." : "Editor not ready.");
+
+    const userApiKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || undefined : undefined;
+    let systemInstruction: string | undefined = undefined;
+    if (activeAiProfileId && aiProfiles) {
+      const p = aiProfiles.find(x => x.id === activeAiProfileId);
+      if (p) systemInstruction = p.instruction;
+    }
+
+    let textToProcess = "";
+    if (targetMode === 'selection') {
+      textToProcess = aiModalContext.selectionText || (aiModalContext.selFrom !== undefined && aiModalContext.selTo !== undefined ? view.state.sliceDoc(aiModalContext.selFrom, aiModalContext.selTo) : "");
+      if (!textToProcess) {
+        textToProcess = view.state.doc.toString();
+      }
+    } else if (targetMode === 'document') {
+      textToProcess = view.state.doc.toString();
+    } else {
+      textToProcess = "";
+    }
+
+    let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
+    if (storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
+      storedTier = 'flash';
+      if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+    }
+
+    const finalTier = modelTier || storedTier;
+
+    const payload: any = {
+      action,
+      text: textToProcess,
+      userApiKey,
+      systemInstruction,
+      modelTier: finalTier
+    };
+    if (action === 'translate') payload.targetLanguage = arg;
+    if (action === 'prompt') {
+      payload.prompt = arg;
+    }
+    if (action === 'latin') payload.theme = arg;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    const res = await fetch("/api/gemini/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      let errData: any = {};
+      try { errData = await res.json(); } catch(e){}
+      const errMsg = errData.error || res.statusText || (lang === 'it' ? 'Errore generazione IA' : 'AI Generation Error');
+      throw new Error(errMsg);
+    }
+
+    const data = await res.json();
+    const resultText = data.result || "";
+
+    if (!resultText) {
+      showFlashMessage(lang === 'it' ? "L'IA non ha restituito alcun testo." : "AI returned empty response.");
+      return true;
+    }
+
+    // Dispatch changes directly into CodeMirror 6
+    (window as any).isVimHandling = true;
+    try {
+      if (targetMode === 'selection' && aiModalContext.selFrom !== undefined && aiModalContext.selTo !== undefined && aiModalContext.selTo <= view.state.doc.length) {
+        view.dispatch({
+          changes: { from: aiModalContext.selFrom, to: aiModalContext.selTo, insert: resultText },
+          selection: { anchor: aiModalContext.selFrom + resultText.length, head: aiModalContext.selFrom + resultText.length }
+        });
+      } else if (targetMode === 'document') {
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: resultText },
+          selection: { anchor: 0, head: 0 }
+        });
+      } else {
+        const pos = aiModalContext.selTo !== undefined ? aiModalContext.selTo : view.state.selection.main.head;
+        view.dispatch({
+          changes: { from: pos, to: pos, insert: resultText },
+          selection: { anchor: pos + resultText.length, head: pos + resultText.length }
+        });
+      }
+    } finally {
+      (window as any).isVimHandling = false;
+    }
+
+    // Exit Vim visual mode if active
+    try {
+      const cm = getCM(view);
+      if (cm && (cm as any).state?.vim?.visualMode) {
+        Vim.exitVisualMode(cm as any, false);
+      }
+    } catch {}
+
+    const newDocStr = view.state.doc.toString();
+    setContent(newDocStr);
+    onSaveFileState(filename, newDocStr);
+
+    setTimeout(() => {
+      if (editorRef.current?.view) {
+        const v = editorRef.current.view;
+        v.requestMeasure();
+        const head = v.state.selection.main.head;
+        v.dispatch({
+          effects: EditorView.scrollIntoView(head, { y: 'center' })
+        });
+        v.contentDOM.focus();
+      }
+    }, 60);
+
+    showFlashMessage(lang === 'it' ? `IA: Inseriti ${resultText.length} caratteri con successo!` : `AI: Inserted ${resultText.length} characters successfully!`);
+    return true;
+  };
+
+  // Synchronize CodeMirror internal document if external content changes without remounting
+  useEffect(() => {
+    if (editorRef.current?.view) {
+      const view = editorRef.current.view;
+      const currentDoc = view.state.doc.toString();
+      if (currentDoc !== content) {
+        view.dispatch({
+          changes: { from: 0, to: currentDoc.length, insert: content }
+        });
+      }
+    }
+  }, [content, filename, fileSessionId]);
+
+  const handleEditorChange = useCallback((val: string) => {
     if (setContentRef.current) setContentRef.current(val);
   }, []);
   const lastKeydownRef = useRef<{key: string, time: number}>({key: '', time: 0});
   const isTouchDeviceRef = useRef(false);
+  const touchStartRef = useRef<{ x: number; y: number; time: number } | null>(null);
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showTableMenu, setShowTableMenu] = useState(false);
   const [showImageMenu, setShowImageMenu] = useState(false);
@@ -143,9 +358,18 @@ export function VimEditor({
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
   useEffect(() => {
-    const isTouch = /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+    const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
     setIsTouchDevice(isTouch);
     isTouchDeviceRef.current = isTouch;
+
+    // Refresh CodeMirror metrics as soon as webfonts are loaded
+    if (typeof document !== 'undefined' && document.fonts?.ready) {
+      document.fonts.ready.then(() => {
+        if (editorRef.current?.view) {
+          editorRef.current.view.requestMeasure();
+        }
+      });
+    }
   }, []);
 
   const vimModesList: { key: VimMode; label: string; shortcut: string; descIt: string; descEn: string }[] = [
@@ -179,11 +403,7 @@ export function VimEditor({
     }
     
     if (isTouchDeviceRef.current) {
-      if (newMode === 'insert') {
-        editorRef.current?.view?.contentDOM.focus();
-      } else {
-        proxyInputRef.current?.focus();
-      }
+      editorRef.current?.view?.contentDOM.focus();
     }
   };
 
@@ -303,32 +523,54 @@ export function VimEditor({
   });
 
   const extensions = useMemo(() => {
-  const exts = [
+    const exts = [
     vim({ status: true }),
-    
-    // Custom extension to draw visual selection on mobile when focus is on proxy input
-    StateField.define<DecorationSet>({
-      create(state) {
-        return Decoration.none;
-      },
-      update(decorations, tr) {
-        if (isTouchDeviceRef.current && !isInsertModeRef.current) {
-          const sel = tr.state.selection.main;
-          if (sel.empty) return Decoration.none;
-          return Decoration.set([
-            Decoration.mark({ class: 'cm-fake-selection' }).range(sel.from, sel.to)
-          ]);
-        }
-        return Decoration.none;
-      },
-      provide: f => EditorView.decorations.from(f)
-    }),
     
     EditorView.domEventHandlers({
       focus(event, view) {
-        if (isTouchDeviceRef.current && !isInsertModeRef.current) {
-           setTimeout(() => proxyInputRef.current?.focus(), 10);
+        // Keep focus directly in CodeMirror
+      },
+      touchstart(event, view) {
+        if (!isTouchDeviceRef.current) return false;
+        if (event.touches.length === 1) {
+          touchStartRef.current = {
+            x: event.touches[0].clientX,
+            y: event.touches[0].clientY,
+            time: Date.now()
+          };
         }
+        return false;
+      },
+      touchend(event, view) {
+        if (!isTouchDeviceRef.current) return false;
+        if (touchStartRef.current && event.changedTouches.length === 1) {
+          const touch = event.changedTouches[0];
+          const dx = Math.abs(touch.clientX - touchStartRef.current.x);
+          const dy = Math.abs(touch.clientY - touchStartRef.current.y);
+          const dt = Date.now() - touchStartRef.current.time;
+          touchStartRef.current = null;
+
+          // Check if there is already an active non-collapsed text selection range
+          const sel = view.state.selection.main;
+          const domSel = window.getSelection ? window.getSelection() : null;
+          const hasActiveRange = (!sel.empty) || (domSel && !domSel.isCollapsed && domSel.toString().length > 0);
+
+          // Quick tap detection (< 12px drag, < 350ms duration)
+          // Preserves native Android drag handles and selection extension gestures!
+          if (!hasActiveRange && dx < 12 && dy < 12 && dt < 350) {
+            const pos = view.posAtCoords({ x: touch.clientX, y: touch.clientY }, false);
+            if (pos !== null) {
+              view.dispatch({
+                selection: { anchor: pos, head: pos },
+                scrollIntoView: false
+              });
+              if (!view.hasFocus) {
+                view.contentDOM.focus();
+              }
+            }
+          }
+        }
+        return false;
       },
       keydown(event, view) {
         if (!isTouchDeviceRef.current) return;
@@ -408,14 +650,16 @@ export function VimEditor({
 
 
     EditorView.theme({
-      ".cm-fake-selection": {
-        backgroundColor: "rgba(51, 153, 255, 0.4) !important"
-      },
       "&": {
         fontFamily: 'var(--font-mono)'
       },
       ".cm-content": {
-        fontFamily: 'var(--font-mono)'
+        fontFamily: 'var(--font-mono)',
+        letterSpacing: '0px'
+      },
+      ".cm-line": {
+        fontFamily: 'var(--font-mono)',
+        letterSpacing: '0px'
       },
       ".cm-scroller": {
         fontFamily: 'var(--font-mono)'
@@ -555,329 +799,181 @@ export function VimEditor({
        if (editorRef.current?.view) unfoldCode(editorRef.current.view);
     });
 
-    Vim.mapCommand('zc', 'action', 'fold', {}, {});
-    Vim.mapCommand('zo', 'action', 'unfold', {}, {});
-    
-    Vim.defineEx('write', 'w', () => {
-      onSaveFileState(filename, content);
-      showFlashMessage(lang === 'it' ? `"${filename}" salvato.` : `"${filename}" written.`);
+    registerVimCommands({
+      lang,
+      filename,
+      content,
+      onSaveFileState,
+      onCloseFileState,
+      onShowHelp,
+      onAiCommand,
+      setLang,
+      showFlashMessage,
+      setShowLineNumbers,
+      onOpenAiAssistant: handleOpenAiModal
     });
-    
-    Vim.defineEx('edit', 'e', (cm: any, params: any) => {
-      const target = params?.args?.[0];
-      if (!target) {
-         showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
-         return;
-      }
-      if (onOpenFileState) {
-         onSaveFileState(filename, content); 
-         const res = onOpenFileState(target);
-         if (res && res.found) {
-            showFlashMessage(lang === 'it' ? `Aperto "${res.name}"` : `Opened "${res.name}"`);
-         } else if (res && !res.found) {
-            showFlashMessage(lang === 'it' ? `Nuovo file "${res.name}"` : `New file "${res.name}"`);
-         }
-      }
-    });
-
-    Vim.defineEx('quit', 'q', (cm: any, params: any) => {
-      const force = params?.argString?.trim() === '!';
-      if (onCloseFileState) {
-         const res = onCloseFileState(force);
-         if (res && res.message) {
-            showFlashMessage(res.message);
-         }
-         if (res && res.isEmptyHistory) {
-            showFlashMessage(lang === 'it' ? 'Ultimo file chiuso' : 'Last file closed');
-         }
-      }
-    });
-
-    Vim.defineEx('wq', 'wq', (cm: any, params: any) => {
-      const force = params?.argString?.trim() === '!';
-      onSaveFileState(filename, content);
-      if (onCloseFileState) {
-         const res = onCloseFileState(true); 
-         if (res && res.message) {
-            showFlashMessage(res.message);
-         }
-      }
-    });
-
-    Vim.map('ZZ', ':wq<CR>', 'normal');
-
-    Vim.defineEx('model', 'model', (cm: any, params: any) => {
-      const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
-      let modelLabel = '3.7 Flash';
-      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
-      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
-      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
-    });
-
-    Vim.defineEx('tier', 'tier', (cm: any, params: any) => {
-      const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
-      let modelLabel = '3.7 Flash';
-      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
-      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
-      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
-    });
-
-    Vim.defineEx('lang', 'lang', (cm: any, params: any) => {
-      const arg = params?.argString?.trim()?.replace('?', '');
-      if (arg === 'it' || arg === 'it') {
-         if (setLang) setLang('it');
-         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
-      } else if (arg === 'en') {
-         if (setLang) setLang('en');
-         showFlashMessage('✓ Language set to English (EN).');
-      } else {
-         const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
-         showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
-      }
-    });
-
-    Vim.defineEx('language', 'language', (cm: any, params: any) => {
-      const arg = params?.argString?.trim()?.replace('?', '');
-      if (arg === 'it' || arg === 'it') {
-         if (setLang) setLang('it');
-         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
-      } else if (arg === 'en') {
-         if (setLang) setLang('en');
-         showFlashMessage('✓ Language set to English (EN).');
-      } else {
-         const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
-         showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
-      }
-    });
-
-    Vim.defineEx('credits', 'credits', (cm: any, params: any) => {
-      const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
-      if (customKey) {
-        showFlashMessage(lang === 'it' 
-          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
-          : '✓ Personal API key active. Check exact usage & quotas on AI Studio.');
-      } else {
-        showFlashMessage(lang === 'it'
-          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
-          : '✓ You are using the shared platform Secret API key (Free tier).');
-      }
-    });
-
-    Vim.defineEx('quota', 'quota', (cm: any, params: any) => {
-      const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
-      if (customKey) {
-        showFlashMessage(lang === 'it' 
-          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
-          : '✓ Personal API key active. Check exact usage & quotas on AI Studio.');
-      } else {
-        showFlashMessage(lang === 'it'
-          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
-          : '✓ You are using the shared platform Secret API key (Free tier).');
-      }
-    });
-
-    Vim.defineEx('set', 'set', (cm: any, params: any) => {
-      const param = params?.argString?.trim();
-      if (!param) return;
-      if (param.includes('model=flash-lite')) {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
-      } else if (param.includes('model=flash')) {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
-      } else if (param.includes('model=pro-thinking')) {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
-      } else if (param.includes('model=pro')) {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
-      } else if (param.includes('lang=it') || param.includes('language=it')) {
-         if (setLang) setLang('it');
-         showFlashMessage('✓ Lingua impostata su Italiano (IT).');
-      } else if (param.includes('lang=en') || param.includes('language=en')) {
-         if (setLang) setLang('en');
-         showFlashMessage('✓ Language set to English (EN).');
-      }
-    });
-
-
-    Vim.defineEx('tear', 'tear', async (cm: any, params: any) => {
-      const target = params?.args?.[0];
-      if (!target) {
-         showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
-         return;
-      }
-      if (onTearFileState) {
-         const res = onTearFileState(target);
-         if (res && res.found && res.content !== undefined) {
-            const success = await copyToClipboard(res.content);
-            if (success) {
-               showFlashMessage(lang === 'it' ? `Contenuto di "${res.name}" strappato!` : `Content of "${res.name}" torn!`);
-            } else {
-               showFlashMessage(lang === 'it' ? `Errore di copia per "${res.name}".` : `Copy error for "${res.name}".`);
-            }
-         } else {
-            showFlashMessage(lang === 'it' ? `File "${target}" non trovato.` : `File "${target}" not found.`);
-         }
-      }
-    });
-
-    Vim.defineEx('help', 'h', (cm: any, params: any) => {
-      if (onShowHelp) onShowHelp(params?.args?.[0]);
-    });
-
-    Vim.defineEx('gemini', 'gem', (cm: any, params: any) => {
-      let arg = params?.argString?.trim();
-      if (!arg) {
-        showFlashMessage(lang === 'it' ? 'Specifica un prompt (es. :gem correggi).' : 'Specify a prompt (e.g. :gem fix errors).');
-        return;
-      }
-      
-      const argLower = arg.toLowerCase();
-      if (argLower === 'which model' || argLower === 'model' || argLower === 'model?' || argLower === 'tier' || argLower === 'tier?') {
-         const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
-      let modelLabel = '3.7 Flash';
-      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
-      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
-      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
-         return;
-      }
-      if (argLower === 'set model=flash-lite' || argLower === 'model flash-lite') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
-         return;
-      }
-      if (argLower === 'set model=flash' || argLower === 'model flash') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
-         return;
-      }
-      if (argLower === 'set model=pro-thinking' || argLower === 'model pro-thinking') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
-         return;
-      }
-      if (argLower === 'set model=pro' || argLower === 'model pro') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
-         return;
-      }
-      if (argLower === 'credits' || argLower === 'quota') {
-         const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
-         if (customKey) {
-           showFlashMessage(lang === 'it' ? '✓ Chiave API personale attiva.' : '✓ Personal API key active.');
-         } else {
-           showFlashMessage(lang === 'it' ? '✓ Usando la chiave di sistema (Gratuita).' : '✓ Using shared platform key (Free tier).');
-         }
-         return;
-      }
-
-      if (onAiCommand) {
-        const isSelection = cm.somethingSelected();
-        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
-        const onInsert = (newText: string) => {
-            if (isSelection) cm.replaceSelection(newText);
-            else cm.setValue(newText);
-        };
-        // Log to console to debug just in case
-        console.log("Sending AI command prompt:", arg);
-        onAiCommand('prompt', arg, textToProcess, isSelection, onInsert);
-      }
-    });
-
-    Vim.defineEx('ai', 'ai', (cm: any, params: any) => {
-      let arg = params?.argString?.trim();
-      if (!arg) {
-        showFlashMessage(lang === 'it' ? 'Specifica un prompt.' : 'Specify a prompt.');
-        return;
-      }
-      
-      const argLower = arg.toLowerCase();
-      if (argLower === 'which model' || argLower === 'model' || argLower === 'model?' || argLower === 'tier' || argLower === 'tier?') {
-         const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
-      let modelLabel = '3.7 Flash';
-      if (currentModel === 'flash-lite') modelLabel = '3.5 Flash-Lite';
-      else if (currentModel === 'pro') modelLabel = '3.1 Pro';
-      else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
-      showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
-         return;
-      }
-      if (argLower === 'set model=flash-lite' || argLower === 'model flash-lite') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.5 Flash-Lite.' : '✓ Model set to 3.5 Flash-Lite.');
-         return;
-      }
-      if (argLower === 'set model=flash' || argLower === 'model flash') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.7 Flash.' : '✓ Model set to 3.7 Flash.');
-         return;
-      }
-      if (argLower === 'set model=pro-thinking' || argLower === 'model pro-thinking') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended.');
-         return;
-      }
-      if (argLower === 'set model=pro' || argLower === 'model pro') {
-         if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
-         showFlashMessage(lang === 'it' ? '✓ Modello impostato su 3.1 Pro.' : '✓ Model set to 3.1 Pro.');
-         return;
-      }
-
-      if (onAiCommand) {
-        const isSelection = cm.somethingSelected();
-        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
-        const onInsert = (newText: string) => {
-            if (isSelection) cm.replaceSelection(newText);
-            else cm.setValue(newText);
-        };
-        console.log("Sending AI command ai:", arg);
-        onAiCommand('prompt', arg, textToProcess, isSelection, onInsert);
-      }
-    });
-
-    Vim.defineEx('translate', 'tr', (cm: any, params: any) => {
-      const arg = params?.argString?.trim();
-      if (onAiCommand) {
-        const isSelection = cm.somethingSelected();
-        const textToProcess = isSelection ? cm.getSelection() : cm.getValue();
-        const onInsert = (newText: string) => {
-           if (isSelection) cm.replaceSelection(newText);
-           else cm.setValue(newText);
-        };
-        console.log("Sending AI command translate:", arg);
-        onAiCommand('translate', arg || 'Italian', textToProcess, isSelection, onInsert);
-      }
-    });
-
-    Vim.defineEx('latin', 'lat', (cm: any, params: any) => {
-      const arg = params?.argString?.trim() || 'random';
-      if (onAiCommand) {
-        const isSelection = cm.somethingSelected();
-        const onInsert = (newText: string) => {
-           if (isSelection) {
-             cm.replaceSelection(newText);
-           } else {
-             // cm.replaceSelection without a selection will insert at the current cursor position
-             cm.replaceSelection(newText + '\n');
-           }
-        };
-        onAiCommand('latin', arg, '', isSelection, onInsert);
-      }
-    });
-  }, [filename, content, lang, onSaveFileState, onShowHelp, onAiCommand]);
+  }, [filename, content, lang, onSaveFileState, onShowHelp, onAiCommand, setShowLineNumbers, handleOpenAiModal]);
 
 
 
-  // Track Vim mode
+  // Patch Vim's openDialog on mobile to use native prompt (fixes focus/keyboard issues)
   useEffect(() => {
+    const patchDialog = () => {
+       if (editorRef.current?.view && isTouchDeviceRef.current) {
+          const cm = getCM(editorRef.current.view);
+          if (cm && !(cm as any)._dialogPatched) {
+             (cm as any)._dialogPatched = true;
+             cm.openDialog = (template: any, callback: any, options: any) => {
+            let shortText = "";
+            if (typeof options?.prefix === "string" && options.prefix) {
+               shortText += options.prefix;
+            } else if (options?.prefix?.textContent) {
+               shortText += options.prefix.textContent;
+            } else if (typeof template === 'string') {
+               shortText += template.replace(/<[^>]+>/g, '');
+            } else if (template?.textContent) {
+               shortText += template.textContent;
+            }
+            if (options?.desc) shortText += " " + options.desc;
+            
+            shortText = shortText.replace(/\(.*?regexp.*?\)/i, '').replace(/javascript regexp/i, '').replace(/regexp/i, '').trim();
+            if (!shortText) shortText = "Command/Search:";
+            
+            const isSearch = options?.prefix === '/' || options?.prefix === '?' || shortText.startsWith('/') || shortText.startsWith('?');
+            
+            let result = window.prompt(shortText, options?.value || "");
+            if (result !== null) {
+              if (callback) {
+                 try {
+                    // Do not wrap in custom cm.operation which suppresses scrollIntoView
+                    callback(result);
+                 } catch(e: any) {
+                    console.error("Dialog callback error", e);
+                 }
+              }
+              
+              if (isSearch) {
+                // Ensure editor scrolls the matched cursor position directly into view (centered on screen)
+                const scrollToCurrentMatch = () => {
+                  if (editorRef.current?.view) {
+                    const v = editorRef.current.view;
+                    v.requestMeasure();
+                    const head = v.state.selection.main.head;
+                    v.dispatch({
+                      effects: EditorView.scrollIntoView(head, { y: 'center' })
+                    });
+                  }
+                };
+                scrollToCurrentMatch();
+                setTimeout(scrollToCurrentMatch, 50);
+                setTimeout(scrollToCurrentMatch, 150);
+                setTimeout(scrollToCurrentMatch, 300);
+              }
+            } else {
+              // User clicked Cancel on prompt dialog: return cleanly to Normal mode
+              if (cm && Vim) {
+                try {
+                  Vim.handleKey(cm, '<Esc>', 'mapping');
+                } catch {}
+              }
+            }
+            
+            if (!result?.toLowerCase().startsWith('help') && !result?.toLowerCase().startsWith('h')) {
+              setTimeout(() => {
+                if (editorRef.current?.view) {
+                  editorRef.current.view.contentDOM.focus();
+                }
+              }, 50);
+            } else {
+              setTimeout(() => {
+                if (editorRef.current?.view) {
+                  editorRef.current.view.contentDOM.blur();
+                }
+              }, 50);
+            }
+            
+            return () => {}; // Return a dummy close function
+             };
+          }
+       }
+    };
+    
+    // Try patching immediately and also set a few fallbacks
+    patchDialog();
+    const interval = setInterval(patchDialog, 500);
+    return () => clearInterval(interval);
+  }, [isTouchDevice]);
+
+      // Track Vim mode and fix search panel UI globally
+  useEffect(() => {
+    let observer: MutationObserver | null = null;
+    if (editorRef.current?.view?.dom) {
+      observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.addedNodes.length > 0) {
+            const panels = document.querySelectorAll('.cm-panel input, .cm-vim-panel input');
+            panels.forEach(input => {
+              if (!input.hasAttribute('data-vim-fixed')) {
+                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('autocorrect', 'off');
+                input.setAttribute('autocapitalize', 'off');
+                input.setAttribute('spellcheck', 'false');
+                input.setAttribute('data-form-type', 'other');
+                input.setAttribute('data-vim-fixed', 'true');
+                
+                input.addEventListener('keydown', (e: Event) => {
+                  const ke = e as KeyboardEvent;
+                  if (ke.key === 'Enter') {
+                    const scrollMatch = () => {
+                      if (editorRef.current?.view) {
+                        const v = editorRef.current.view;
+                        v.requestMeasure();
+                        const head = v.state.selection.main.head;
+                        v.dispatch({
+                          effects: EditorView.scrollIntoView(head, { y: 'center' })
+                        });
+                      }
+                    };
+                    scrollMatch();
+                    setTimeout(scrollMatch, 50);
+                    setTimeout(scrollMatch, 150);
+                    setTimeout(scrollMatch, 300);
+                  }
+                });
+                
+                const parent = input.parentElement;
+                if (parent) {
+                  // Hide any span that contains "regexp" text
+                  const spans = parent.querySelectorAll('span');
+                  spans.forEach(span => {
+                    if (span.textContent?.toLowerCase().includes('regexp')) {
+                      span.style.display = 'none';
+                    }
+                  });
+                  // Also check direct text nodes just in case
+                  parent.childNodes.forEach(node => {
+                     if (node.nodeType === 3) {
+                        let text = node.textContent || '';
+                        if (text.toLowerCase().includes('regexp')) {
+                           node.textContent = text.replace(/\(.*?regexp.*?\)/i, '').replace(/javascript regexp/i, '').replace(/regexp/i, '');
+                        }
+                     }
+                  });
+                }
+              }
+            });
+          }
+        }
+      });
+      observer.observe(editorRef.current.view.dom, { childList: true, subtree: true });
+    }
+
     const handleVimMode = (e: any) => {
       let m: VimMode = 'normal';
       if (e.mode === 'insert') {
         m = 'insert';
         isInsertModeRef.current = true;
+        onSoftKeyboardChange?.(true);
       } else {
         isInsertModeRef.current = false;
       }
@@ -894,12 +990,34 @@ export function VimEditor({
       }
     };
     
+    const handleVimKeyPress = (key: string) => {
+      if (key === 'n' || key === 'N') {
+        const scrollToCurrentMatch = () => {
+          if (editorRef.current?.view) {
+            const v = editorRef.current.view;
+            v.requestMeasure();
+            const head = v.state.selection.main.head;
+            v.dispatch({
+              effects: EditorView.scrollIntoView(head, { y: 'center' })
+            });
+          }
+        };
+        scrollToCurrentMatch();
+        setTimeout(scrollToCurrentMatch, 50);
+        setTimeout(scrollToCurrentMatch, 150);
+      }
+    };
+
     const view = editorRef.current?.view;
     if (view) {
        const cm = getCM(view);
        if (cm && (cm as any).on) {
           (cm as any).on('vim-mode-change', handleVimMode);
-          return () => (cm as any).off('vim-mode-change', handleVimMode);
+          (cm as any).on('vim-keypress', handleVimKeyPress);
+          return () => {
+             (cm as any).off('vim-mode-change', handleVimMode);
+             (cm as any).off('vim-keypress', handleVimKeyPress);
+          };
        }
     }
   }, [editorRef.current?.view, onModeChange]);
@@ -908,8 +1026,8 @@ export function VimEditor({
     lineNumbers: showLineNumbers,
     foldGutter: true,
     highlightActiveLine: false,
-    highlightSelectionMatches: true,
-  }), [showLineNumbers]);
+    highlightSelectionMatches: !isTouchDevice,
+  }), [showLineNumbers, isTouchDevice]);
 
   return (
     <div className="flex-1 flex flex-col bg-white dark:bg-[#0D0F12] text-gray-900 dark:text-[#E0E0E0] transition-colors duration-200 min-w-0 min-h-0 overflow-hidden">
@@ -1189,8 +1307,9 @@ export function VimEditor({
         <div className={`flex-1 flex relative overflow-hidden bg-gray-50 dark:bg-[#16181D] transition-colors duration-200 min-w-0 min-h-0 ${
           showPreview ? (isPreviewFullScreen ? 'hidden' : 'hidden lg:flex border-r border-gray-200 dark:border-[#1E2127]') : ''
         }`}>
-          <div className="flex-1 overflow-auto" style={{ fontSize: `${editorFontSize}px` }}>
+          <div className={`flex-1 overflow-hidden ${currentMode === 'insert' ? 'cm-mode-insert' : 'cm-mode-' + currentMode}`} style={{ fontSize: `${editorFontSize}px` }}>
             <CodeMirror
+              key={`${filename}_${fileSessionId}`}
               ref={editorRef}
               value={content}
               height="100%"
@@ -1330,7 +1449,62 @@ export function VimEditor({
                 const cm = getCM(editorRef.current.view);
                 if (key === 'Escape') key = '<Esc>';
                 if (cm && Vim) {
-                   Vim.handleKey(cm, key, 'mapping');
+                   if (key === ':') {
+                     let cmd = window.prompt(lang === 'it' ? 'Inserisci comando Vim (es. w, q, tear local)' : 'Enter Vim command (e.g. w, q, tear local)');
+                     if (cmd !== null) {
+                        cmd = cmd.trim();
+                        if (cmd.startsWith(':')) {
+                          cmd = cmd.substring(1).trim();
+                        }
+                        if (cmd) {
+                          try {
+                            Vim.handleEx(cm as any, cmd);
+                          } catch(e) {
+                            console.error('Vim handleEx error', e);
+                            alert('Errore: ' + e.message);
+                          }
+                        }
+                        // Do not forcefully regain focus if the command was 'help', to avoid virtual keyboard popping up
+                        if (!cmd.toLowerCase().startsWith('help') && !cmd.toLowerCase().startsWith('h')) {
+                          setTimeout(() => {
+                            if (editorRef.current?.view) {
+                              editorRef.current.view.contentDOM.focus();
+                            }
+                          }, 50);
+                        }
+                        
+                        // Async test
+                        if (cmd === 'testasync') {
+                           setTimeout(() => {
+                              try {
+                                 cm.operation(() => {
+                                   cm.replaceSelection("ASYNC TEST RESULT\n");
+                                 });
+                                 cm.scrollIntoView(cm.getCursor());
+                              } catch(e) {
+                                 alert("Async insert error: " + e.message);
+                              }
+                           }, 2000);
+                        }
+                     }
+                   } else {
+                     Vim.handleKey(cm, key, 'mapping');
+                     if (key === 'n' || key === 'N') {
+                       const scrollMatch = () => {
+                         if (editorRef.current?.view) {
+                           const v = editorRef.current.view;
+                           v.requestMeasure();
+                           const head = v.state.selection.main.head;
+                           v.dispatch({
+                             effects: EditorView.scrollIntoView(head, { y: 'center' })
+                           });
+                         }
+                       };
+                       scrollMatch();
+                       setTimeout(scrollMatch, 50);
+                       setTimeout(scrollMatch, 150);
+                     }
+                   }
                 }
              }
           }}
@@ -1348,6 +1522,12 @@ export function VimEditor({
                    selection: { anchor: pos + text.length + (offsetStr ? parseInt(offsetStr) : 0) }
                 });
              }
+          }}
+        />
+        <button
+          id="simulated-ai-trigger"
+          onClick={() => {
+             handleOpenAiModal();
           }}
         />
       </div>
@@ -1416,11 +1596,28 @@ export function VimEditor({
                   const view = editorRef.current.view;
                   const cm = getCM(view);
                   if (cm && Vim) {
-                    view.contentDOM.focus();
-                    (window as any).isVimHandling = true;
-                    Vim.handleKey(cm, '<Esc>', 'mapping');
-                    Vim.handleKey(cm, ':', 'mapping');
-                    (window as any).isVimHandling = false;
+                    let cmd = window.prompt(lang === 'it' ? 'Inserisci comando Vim (es. w, q, tear local)' : 'Enter Vim command (e.g. w, q, tear local)');
+                    if (cmd !== null) {
+                       cmd = cmd.trim();
+                       if (cmd.startsWith(':')) {
+                         cmd = cmd.substring(1).trim();
+                       }
+                       if (cmd) {
+                         try {
+                           Vim.handleEx(cm as any, cmd);
+                         } catch(e) {
+                           console.error('Vim handleEx error', e);
+                           alert('Errore: ' + e.message);
+                         }
+                       }
+                       if (!cmd.toLowerCase().startsWith('help') && !cmd.toLowerCase().startsWith('h')) {
+                         setTimeout(() => {
+                           if (editorRef.current?.view) {
+                             editorRef.current.view.contentDOM.focus();
+                           }
+                         }, 50);
+                       }
+                    }
                   }
                 }
               }}
@@ -1444,6 +1641,36 @@ export function VimEditor({
         </div>
         
         <div className="px-2 font-mono tabular-nums">Ln {cursorPos.line}, Col {cursorPos.col}</div>
+        
+        {/* Gemini Model Indicator & Quick Switcher in Status Bar */}
+        <button
+          type="button"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const current = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
+            const next = current === 'flash' ? 'flash-lite' : current === 'flash-lite' ? 'pro' : 'flash';
+            if (typeof window !== 'undefined') {
+              localStorage.setItem('livia_gemini_model', next);
+            }
+            setStatusMessage(lang === 'it' 
+              ? `Modello IA: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}` 
+              : `AI Model: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`);
+          }}
+          className="px-1.5 py-0.5 my-auto mx-1 bg-white/20 hover:bg-white/30 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/80 text-white dark:text-emerald-300 rounded text-[9px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all border border-white/30 dark:border-emerald-700/50 shadow-xs"
+          title={lang === 'it' ? 'Modello Gemini attivo. Clicca per alternare (Flash / Flash-Lite / Pro)' : 'Active Gemini Model. Click to cycle (Flash / Flash-Lite / Pro)'}
+          id="footer-gemini-model-btn"
+        >
+          <Sparkles size={10} className="text-amber-300 shrink-0" />
+          <span>
+            {typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'pro' 
+              ? '3.1 PRO' 
+              : typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'flash-lite' 
+              ? '3.1 LITE' 
+              : '3.8 FLASH'}
+          </span>
+        </button>
+
         <div className="px-2 hidden sm:block font-mono">UTF-8</div>
         <div className="px-2 font-mono">{format}</div>
 
@@ -1489,6 +1716,28 @@ export function VimEditor({
         }}
        />
       </footer>
+
+      {/* Mobile-Friendly AI Assistant Modal */}
+      <AiAssistantModal
+        isOpen={isAiModalOpen}
+        onClose={() => setIsAiModalOpen(false)}
+        lang={lang}
+        selectionText={aiModalContext.selectionText}
+        hasSelection={aiModalContext.hasSelection}
+        docLength={aiModalContext.docLength}
+        aiProfiles={aiProfiles || []}
+        activeProfileId={activeAiProfileId || null}
+        onSelectProfile={(id) => {
+          if (setActiveAiProfileId) setActiveAiProfileId(id);
+        }}
+        onOpenSettingsModal={() => {
+          if (onOpenSettingsModal) onOpenSettingsModal();
+        }}
+        onOpenAiProfilesModal={() => {
+          if (onOpenAiProfilesModal) onOpenAiProfilesModal();
+        }}
+        onExecute={handleExecuteAiModal}
+      />
     </div>
   );
 }
