@@ -181,6 +181,12 @@ export default function App() {
   // Virtual File System State
   const [fileHistory, setFileHistory] = useState<string[]>([]);
   const [virtualFiles, setVirtualFiles] = useState<FileData[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('livia_virtual_files');
+      if (saved) {
+        try { return JSON.parse(saved); } catch (e) {}
+      }
+    }
     const initialLang: 'it' | 'en' = (() => {
       if (typeof window !== 'undefined') {
         const saved = localStorage.getItem('livia_lang');
@@ -279,6 +285,10 @@ export default function App() {
     }
   };
   const [content, setContent] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('livia_editor_content');
+      if (saved !== null) return saved;
+    }
     const initialLang: 'it' | 'en' = (() => {
       if (typeof window !== 'undefined') {
         const saved = localStorage.getItem('livia_lang');
@@ -289,6 +299,10 @@ export default function App() {
     return getTemplates(initialLang)['txt'].content;
   });
   const [filename, setFilename] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('livia_editor_filename');
+      if (saved) return saved;
+    }
     const initialLang: 'it' | 'en' = (() => {
       if (typeof window !== 'undefined') {
         const saved = localStorage.getItem('livia_lang');
@@ -395,6 +409,14 @@ export default function App() {
       setFileSessionId(prev => prev + 1);
     }
   }, [filename, content, lang]);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('livia_editor_content', content);
+      localStorage.setItem('livia_editor_filename', filename);
+      localStorage.setItem('livia_virtual_files', JSON.stringify(virtualFiles));
+    }
+  }, [content, filename, virtualFiles]);
 
   // Self-heal stale/deprecated AI model settings in localStorage (e.g. from older mobile sessions)
   useEffect(() => {
@@ -706,6 +728,24 @@ export default function App() {
         setDriveUser(user);
         setDriveToken(token);
         fetchDriveFiles(token, 'root');
+        if (typeof window !== 'undefined') {
+          const wasOpen = sessionStorage.getItem('livia_was_drive_modal_open');
+          if (wasOpen === 'true') {
+            setIsDriveFullScreen(true);
+          }
+          const wasSidebarOpen = sessionStorage.getItem('livia_was_sidebar_open');
+          if (wasSidebarOpen === 'true') {
+            setShowCheatsheet(true);
+          }
+          const savedTab = sessionStorage.getItem('livia_sidebar_tab');
+          if (savedTab) {
+            setSidebarTab(savedTab as any);
+          }
+          
+          sessionStorage.removeItem('livia_was_drive_modal_open');
+          sessionStorage.removeItem('livia_was_sidebar_open');
+          sessionStorage.removeItem('livia_sidebar_tab');
+        }
       },
       () => {
         setDriveUser(null);
@@ -775,6 +815,11 @@ export default function App() {
 
   const handleDriveSignIn = async () => {
     try {
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('livia_was_drive_modal_open', isDriveFullScreen ? 'true' : 'false');
+        sessionStorage.setItem('livia_was_sidebar_open', showCheatsheet ? 'true' : 'false');
+        sessionStorage.setItem('livia_sidebar_tab', sidebarTab);
+      }
       const result = await googleSignIn();
       if (result) {
         setDriveUser(result.user);

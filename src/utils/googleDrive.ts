@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, User, Auth } from 'firebase/auth';
+import { getAuth, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, Auth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { convertGoogleDocsHtmlToMarkdown } from './googleDocsHelper';
 
@@ -25,6 +25,11 @@ provider.addScope('https://www.googleapis.com/auth/documents.readonly');
 let isSigningIn = false;
 let cachedAccessToken: string | null = null;
 
+let isMobileCache = false;
+if (typeof window !== 'undefined') {
+  isMobileCache = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+}
+
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
@@ -33,14 +38,27 @@ export const initAuth = (
     if (onAuthFailure) onAuthFailure();
     return () => {};
   }
+  
+  // Check for redirect result first (mobile PWA fallback)
+  getRedirectResult(auth).then((result) => {
+    if (result) {
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      if (credential?.accessToken) {
+        cachedAccessToken = credential.accessToken;
+        if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
+      }
+    }
+  }).catch((err) => {
+    console.error("Errore getRedirectResult:", err);
+  });
+
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
       if (cachedAccessToken) {
         if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
       } else {
-        // If logged in but no token, we can try to re-authenticate or wait for manual trigger.
-        // For security/simplicity we cache it only during sign in.
-        if (onAuthFailure) onAuthFailure();
+        // We might be waiting for getRedirectResult to finish, so don't fail immediately
+        // Wait a small bit, or just let getRedirectResult call onAuthSuccess
       }
     } else {
       cachedAccessToken = null;
@@ -55,6 +73,14 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   }
   try {
     isSigningIn = true;
+    
+    // For mobile devices (especially PWA/Chrome Android), popups are heavily blocked by COOP/COEP headers and popup blockers.
+    // So we use redirect flow instead.
+    if (isMobileCache) {
+      await signInWithRedirect(auth, provider);
+      return null; // Page will redirect
+    }
+
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
     if (!credential?.accessToken) {
