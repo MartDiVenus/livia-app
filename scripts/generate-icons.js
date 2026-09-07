@@ -11,7 +11,7 @@ async function generate() {
     fs.mkdirSync(tauriIconsDir, { recursive: true });
   }
 
-  const sizes = [512, 256, 128, 64, 32, 16];
+  const sizes = [512, 256, 192, 128, 64, 32, 16];
 
   for (const size of sizes) {
     const resvg = await renderAsync(svgBuffer, {
