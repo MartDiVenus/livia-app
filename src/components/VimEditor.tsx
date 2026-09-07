@@ -18,6 +18,7 @@ import { json } from '@codemirror/lang-json';
 import { xml } from '@codemirror/lang-xml';
 import { StreamLanguage } from '@codemirror/language';
 import { copyToClipboard } from '../utils/clipboard';
+import { generateGeminiContent } from '../utils/geminiClient';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { go } from '@codemirror/legacy-modes/mode/go';
@@ -222,22 +223,9 @@ export function VimEditor({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-    const res = await fetch("/api/gemini/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: controller.signal
-    });
+    const data = await generateGeminiContent(payload, lang);
     clearTimeout(timeoutId);
 
-    if (!res.ok) {
-      let errData: any = {};
-      try { errData = await res.json(); } catch(e){}
-      const errMsg = errData.error || res.statusText || (lang === 'it' ? 'Errore generazione IA' : 'AI Generation Error');
-      throw new Error(errMsg);
-    }
-
-    const data = await res.json();
     const resultText = data.result || "";
 
     if (!resultText) {

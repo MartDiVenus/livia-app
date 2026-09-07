@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, X, Languages, BookOpen, Send, Check, Settings, Bot, ArrowRight, Loader2, AlertCircle, Quote, Zap, Cpu, RefreshCw, ExternalLink, Key, CheckCircle2, GripHorizontal } from 'lucide-react';
+import { testGeminiConnection } from '../utils/geminiClient';
 import { AiProfile } from '../types';
 
 export interface AiAssistantModalProps {

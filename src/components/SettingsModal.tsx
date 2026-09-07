@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
+import { testGeminiConnection } from '../utils/geminiClient';
 import { 
   X, 
   Key, 
@@ -66,10 +67,8 @@ export function SettingsModal({
     setTestResult(null);
     try {
       const keyToTest = apiKeyInput.trim();
-      const queryParam = keyToTest ? `?key=${encodeURIComponent(keyToTest)}` : '';
       const start = Date.now();
-      const res = await fetch(`/api/gemini/status${queryParam}`);
-      const data = await res.json();
+      const data = await testGeminiConnection(keyToTest, lang);
       const elapsed = Date.now() - start;
       if (data.ok) {
         setTestResult({

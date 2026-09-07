@@ -18,6 +18,7 @@ import { AuxiliaryKeyboard } from './components/AuxiliaryKeyboard';
 import { exportToPDF } from './utils/pdfExport';
 import { copyToClipboard } from './utils/clipboard';
 import { convertToLaTeX } from './utils/latexExport';
+import { generateGeminiContent } from './utils/geminiClient';
 import { VimMode, FileFormat, TEMPLATES, getTemplates, getLvarcTemplate, getHelpTemplate, getHelpColorsTemplate, getHelpFiguresTemplate, getHelpTablesTemplate, getHelpAiTemplate, HELP_TEMPLATE, HELP_COLORS_TEMPLATE, HELP_FIGURES_TEMPLATE, HELP_TABLES_TEMPLATE, HELP_AI_TEMPLATE, HELP_FIGURES_TABLES_TEMPLATE, FileData, sanitizeText, AiProfile } from './types';
 import { parseOutline, OutlineElement } from './utils/outlineParser';
 import { parseKeyFromVimCommand } from './utils/vimEngine';
@@ -254,22 +255,9 @@ export default function App() {
           const controller = new AbortController();
           const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
           
-          const res = await fetch("/api/gemini/generate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal: controller.signal
-          });
+          const data = await generateGeminiContent(payload, lang);
           clearTimeout(timeoutId);
-          if (!res.ok) {
-            let errData: any = {};
-            try { errData = await res.json(); } catch(err){}
-            const errMsg = errData.error || res.statusText || "Unknown";
-            onInsert("❌ Errore API: " + errMsg, true);
-            replaced = true;
-            throw new Error(errMsg);
-          }
-          const data = await res.json();
+          
           onInsert(data.result || (lang === 'it' ? '⚠️ Nessun risultato.' : '⚠️ No result.'), true);
           replaced = true;
           showToast(lang === 'it' ? 'Fatto!' : 'Done!', 'success');
