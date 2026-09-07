@@ -9,7 +9,7 @@ export interface User {
 let cachedAccessToken: string | null = null;
 let gTokenClient: any = null;
 
-const GOOGLE_CLIENT_ID = firebaseConfig.oAuthClientId || '769681664076-i9d27nvvf69974n3fj1b9frdcs8odapv.apps.googleusercontent.com';
+const GOOGLE_CLIENT_ID = firebaseConfig.oAuthClientId || '769681664076-3ebt1mbs441st94b83m3r3b9ms3d3aie.apps.googleusercontent.com';
 
 function loadGsiScript(): Promise<void> {
   return new Promise((resolve, reject) => {
