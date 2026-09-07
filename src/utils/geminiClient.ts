@@ -44,7 +44,7 @@ export async function testGeminiConnection(apiKey: string, lang: string = 'it'):
       return data;
     } catch (e: any) {
       if (e.message.includes('JSON') || e.message.includes('Unexpected token')) {
-         return { ok: false, error: lang === 'it' ? "Non è possibile usare la chiave di default su questo hosting. Inserisci la tua API Key personale sopra." : "Cannot use default key on this hosting. Please insert your personal API Key above." };
+         return { ok: false, error: lang === 'it' ? "Non è possibile usare la chiave di default su questo hosting. Inserisci la tua API Key personale nel campo 'Personal Google Gemini API Key' delle Impostazioni." : "Cannot use default key on this hosting. Please insert your personal API Key in the 'Personal Google Gemini API Key' field in Settings." };
       }
       return { ok: false, error: e.message };
     }

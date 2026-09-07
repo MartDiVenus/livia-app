@@ -1297,7 +1297,7 @@ export default function App() {
       {/* Toast Alert Box */}
       {toast && (
         <div 
-          className={`fixed top-4 right-4 z-50 flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border transition-all duration-300 font-sans ${
+          className={`fixed top-4 right-4 z-[9999] flex items-center gap-2 px-4 py-3 rounded-xl shadow-lg border transition-all duration-300 font-sans ${
             toast.type === 'success' 
               ? 'bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-950/90 dark:text-emerald-300 dark:border-emerald-850'
               : toast.type === 'error'

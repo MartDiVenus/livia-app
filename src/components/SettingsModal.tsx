@@ -61,6 +61,7 @@ export function SettingsModal({
   const [activeTab, setActiveTab] = useState<'ai' | 'editor' | 'misc'>('ai');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; isCloudDisabled?: boolean } | null>(null);
+  const [isKeySaved, setIsKeySaved] = useState(false);
 
   const handleTestKey = async () => {
     setIsTestingKey(true);
@@ -118,6 +119,8 @@ export function SettingsModal({
     const trimmed = apiKeyInput.trim();
     if (trimmed) {
       localStorage.setItem('livia_custom_gemini_key', trimmed);
+      setIsKeySaved(true);
+      setTimeout(() => setIsKeySaved(false), 2000);
       showToast(
         lang === 'it' 
           ? 'Chiave API Gemini personale salvata nel browser!' 
@@ -126,6 +129,8 @@ export function SettingsModal({
       );
     } else {
       localStorage.removeItem('livia_custom_gemini_key');
+      setIsKeySaved(true);
+      setTimeout(() => setIsKeySaved(false), 2000);
       showToast(
         lang === 'it' 
           ? 'Chiave API Gemini rimossa. Verrà usata la chiave di default.' 
@@ -287,9 +292,14 @@ export function SettingsModal({
                     <button
                       type="button"
                       onClick={handleSaveApiKey}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex-1"
+                      className={`px-4 py-2 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer flex-1 flex items-center justify-center gap-1 ${
+                        isKeySaved ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-blue-600 hover:bg-blue-700'
+                      }`}
                     >
-                      {lang === 'it' ? 'Salva Chiave' : 'Save Key'}
+                      {isKeySaved && <Check size={14} />}
+                      {isKeySaved 
+                        ? (lang === 'it' ? 'Salvata!' : 'Saved!') 
+                        : (lang === 'it' ? 'Salva Chiave' : 'Save Key')}
                     </button>
                     <button
                       type="button"
