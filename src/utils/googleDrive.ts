@@ -1,105 +1,131 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, signInWithPopup, signInWithRedirect, getRedirectResult, GoogleAuthProvider, onAuthStateChanged, User, Auth } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { convertGoogleDocsHtmlToMarkdown } from './googleDocsHelper';
 
-// Initialize Firebase safely
-let app;
-let auth: Auth | null = null;
-
-if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.apiKey.trim() !== '') {
-  try {
-    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    auth = getAuth(app);
-  } catch (err) {
-    console.warn('Inizializzazione Firebase non riuscita:', err);
-  }
+export interface User {
+  displayName: string | null;
+  email: string | null;
 }
 
-const provider = new GoogleAuthProvider();
-provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/drive');
-provider.addScope('https://www.googleapis.com/auth/documents');
-provider.addScope('https://www.googleapis.com/auth/documents.readonly');
-
-let isSigningIn = false;
 let cachedAccessToken: string | null = null;
+let gTokenClient: any = null;
 
-let isMobileCache = false;
-if (typeof window !== 'undefined') {
-  isMobileCache = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
+const GOOGLE_CLIENT_ID = firebaseConfig.oAuthClientId || '769681664076-i9d27nvvf69974n3fj1b9frdcs8odapv.apps.googleusercontent.com';
+
+function loadGsiScript(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') return resolve();
+    if ((window as any).google?.accounts?.oauth2) return resolve();
+
+    const existing = document.getElementById('gsi-client-script');
+    if (existing) return resolve();
+
+    const script = document.createElement('script');
+    script.id = 'gsi-client-script';
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = (e) => reject(new Error("Impossibile caricare il modulo Google Identity Services."));
+    document.head.appendChild(script);
+  });
+}
+
+function getUserInfo(token: string): Promise<User> {
+  return fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${token}` }
+  })
+  .then(res => res.json())
+  .then(data => ({
+    displayName: data.name || data.given_name || 'Utente Google',
+    email: data.email || null
+  }))
+  .catch(() => ({ displayName: 'Utente Google', email: null }));
 }
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  if (!auth) {
-    if (onAuthFailure) onAuthFailure();
-    return () => {};
+  // Try to restore from sessionStorage
+  if (typeof window !== 'undefined') {
+    const savedToken = sessionStorage.getItem('livia_drive_access_token');
+    if (savedToken) {
+      cachedAccessToken = savedToken;
+      getUserInfo(savedToken).then(user => {
+        if (onAuthSuccess) onAuthSuccess(user, savedToken);
+      }).catch(() => {
+        if (onAuthFailure) onAuthFailure();
+      });
+      return () => {}; // No-op unsubscribe
+    }
   }
-  
-  // Check for redirect result first (mobile PWA fallback)
-  getRedirectResult(auth).then((result) => {
-    if (result) {
-      const credential = GoogleAuthProvider.credentialFromResult(result);
-      if (credential?.accessToken) {
-        cachedAccessToken = credential.accessToken;
-        if (onAuthSuccess) onAuthSuccess(result.user, cachedAccessToken);
-      }
-    }
-  }).catch((err) => {
-    console.error("Errore getRedirectResult:", err);
-  });
 
-  return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else {
-        // We might be waiting for getRedirectResult to finish, so don't fail immediately
-        // Wait a small bit, or just let getRedirectResult call onAuthSuccess
+  // Parse URL hash for OAuth tokens if using redirect flow fallback
+  if (typeof window !== 'undefined') {
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token=')) {
+      const params = new URLSearchParams(hash.substring(1));
+      const token = params.get('access_token');
+      if (token) {
+        cachedAccessToken = token;
+        sessionStorage.setItem('livia_drive_access_token', token);
+        window.history.replaceState(null, '', window.location.pathname);
+        getUserInfo(token).then(user => {
+          if (onAuthSuccess) onAuthSuccess(user, token);
+        });
+        return () => {};
       }
-    } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
     }
-  });
+  }
+
+  if (onAuthFailure) onAuthFailure();
+  return () => {}; // return dummy unsubscribe function
 };
 
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
-  if (!auth || !firebaseConfig.apiKey) {
-    throw new Error('Manca la chiave "apiKey" o "appId" nel file firebase-applet-config.json. Configura le credenziali Web del tuo progetto Firebase.');
+  if (typeof window === 'undefined') return null;
+  
+  await loadGsiScript();
+  const google = (window as any).google;
+  if (!google?.accounts?.oauth2) {
+    throw new Error("Client Google OAuth non caricato.");
   }
-  try {
-    isSigningIn = true;
-    
-    // For mobile devices (especially PWA/Chrome Android), popups are heavily blocked by COOP/COEP headers and popup blockers.
-    // So we use redirect flow instead.
-    if (isMobileCache) {
-      await signInWithRedirect(auth, provider);
-      return null; // Page will redirect
-    }
 
-    const result = await signInWithPopup(auth, provider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Impossibile ottenere il token di accesso da Firebase Auth');
-    }
+  return new Promise((resolve, reject) => {
+    try {
+      const isMobileCache = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|CrOS/i.test(navigator.userAgent || '');
+      
+      const config: any = {
+        client_id: GOOGLE_CLIENT_ID,
+        scope: 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/documents https://www.googleapis.com/auth/documents.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email',
+        callback: async (resp: any) => {
+          if (resp.error !== undefined) {
+            reject(new Error("Autorizzazione negata o annullata: " + (resp.error_description || resp.error)));
+            return;
+          }
+          cachedAccessToken = resp.access_token;
+          sessionStorage.setItem('livia_drive_access_token', resp.access_token);
+          
+          try {
+            const user = await getUserInfo(resp.access_token);
+            resolve({ user, accessToken: resp.access_token });
+          } catch (e) {
+            resolve({ user: { displayName: 'Utente Google', email: null }, accessToken: resp.access_token });
+          }
+        },
+      };
 
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
-  } catch (error: any) {
-    console.error('Errore di accesso:', error);
-    if (error?.code === 'auth/access-denied' || error?.message?.includes('access_denied') || error?.code === 'auth/popup-closed-by-user') {
-      if (error?.code !== 'auth/popup-closed-by-user') {
-        throw new Error('Accesso Google bloccato (Errore 403): Aggiungi la tua email tra gli "Utenti di Prova" (Test Users) nella Schermata di Consenso OAuth su Google Cloud Console per il progetto livia-editor.');
+      if (isMobileCache) {
+        config.ux_mode = 'redirect';
+        config.redirect_uri = window.location.origin;
       }
+
+      gTokenClient = google.accounts.oauth2.initTokenClient(config);
+      gTokenClient.requestAccessToken({ prompt: '' });
+    } catch (e) {
+      reject(e);
     }
-    throw error;
-  } finally {
-    isSigningIn = false;
-  }
+  });
 };
 
 export const getAccessToken = (): string | null => {
@@ -107,8 +133,10 @@ export const getAccessToken = (): string | null => {
 };
 
 export const logout = async () => {
-  await auth.signOut();
   cachedAccessToken = null;
+  if (typeof window !== 'undefined') {
+    sessionStorage.removeItem('livia_drive_access_token');
+  }
 };
 
 // --- Google Drive API Operations ---
