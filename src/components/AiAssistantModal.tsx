@@ -152,10 +152,8 @@ export function AiAssistantModal({
     setErrorMessage(null);
     try {
       const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') || '' : '';
-      const queryParam = customKey.trim() ? `?key=${encodeURIComponent(customKey.trim())}` : '';
       const startTime = Date.now();
-      const res = await fetch(`/api/gemini/status${queryParam}`);
-      const data = await res.json();
+      const data = await testGeminiConnection(customKey, lang);
       const elapsed = Date.now() - startTime;
 
       if (data.ok) {

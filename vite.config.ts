@@ -16,6 +16,7 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,txt}'],
           maximumFileSizeToCacheInBytes: 5000000,
+          navigateFallbackDenylist: [/^\/api/],
         },
         manifest: {
           name: "LiViA Editor™",
