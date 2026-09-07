@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Sparkles, X, Languages, BookOpen, Send, Check, Settings, Bot, ArrowRight, Loader2, AlertCircle, Quote, Zap, Cpu, RefreshCw, ExternalLink, Key, CheckCircle2 } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Sparkles, X, Languages, BookOpen, Send, Check, Settings, Bot, ArrowRight, Loader2, AlertCircle, Quote, Zap, Cpu, RefreshCw, ExternalLink, Key, CheckCircle2, GripHorizontal } from 'lucide-react';
 import { AiProfile } from '../types';
 
 export interface AiAssistantModalProps {
@@ -65,6 +66,41 @@ export function AiAssistantModal({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Dragging state
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStartRef = useRef({ startX: 0, startY: 0, initialPosX: 0, initialPosY: 0 });
+
+  const handlePointerDown = (e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('#ai-modal-close-btn')) return;
+    setIsDragging(true);
+    dragStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      initialPosX: position.x,
+      initialPosY: position.y
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (isDragging) {
+      const dx = e.clientX - dragStartRef.current.startX;
+      const dy = e.clientY - dragStartRef.current.startY;
+      setPosition({
+        x: dragStartRef.current.initialPosX + dx,
+        y: dragStartRef.current.initialPosY + dy
+      });
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (isDragging) {
+      setIsDragging(false);
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    }
+  };
+
   // Check if user has a custom API key set
   const [hasCustomKey, setHasCustomKey] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -77,6 +113,7 @@ export function AiAssistantModal({
   // Sync default targetMode when selection status changes or modal opens
   useEffect(() => {
     if (isOpen) {
+      setPosition({ x: 0, y: 0 });
       setTargetMode(hasSelection ? 'selection' : 'cursor');
       setErrorMessage(null);
       setTestResult(null);
@@ -236,9 +273,11 @@ export function AiAssistantModal({
     }
   };
 
-  return (
+  if (!isOpen) return null;
+
+  return createPortal(
     <div 
-      className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs font-sans animate-in fade-in duration-150"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-black/60 backdrop-blur-xs font-sans animate-in fade-in duration-150"
       onClick={(e) => {
         if (e.target === e.currentTarget && !isLoading) onClose();
       }}
@@ -246,18 +285,26 @@ export function AiAssistantModal({
     >
       <div 
         className="bg-white dark:bg-[#12151B] border border-gray-200 dark:border-[#2D333F] rounded-2xl shadow-2xl w-full max-w-xl max-h-[92dvh] flex flex-col overflow-hidden text-gray-800 dark:text-zinc-200 animate-in zoom-in-95 duration-150"
+        style={{ transform: `translate(${position.x}px, ${position.y}px)` }}
         id="ai-assistant-modal-window"
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-[#202530] bg-linear-to-r from-emerald-500/10 via-indigo-500/10 to-purple-500/10 dark:from-emerald-950/30 dark:via-indigo-950/30 dark:to-purple-950/30 shrink-0">
+        <div 
+          className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-[#202530] bg-linear-to-r from-emerald-500/10 via-indigo-500/10 to-purple-500/10 dark:from-emerald-950/30 dark:via-indigo-950/30 dark:to-purple-950/30 shrink-0 cursor-move touch-none select-none"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+        >
           <div className="flex items-center gap-2.5">
             <div className="p-1.5 rounded-xl bg-linear-to-br from-emerald-500 to-indigo-600 text-white shadow-xs">
               <Sparkles size={18} />
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold tracking-tight text-gray-900 dark:text-zinc-100">
+                <h2 className="text-sm font-bold tracking-tight text-gray-900 dark:text-zinc-100 flex items-center gap-2">
                   {lang === 'it' ? 'Assistente IA LiViA' : 'LiViA AI Assistant'}
+                  <GripHorizontal size={14} className="text-gray-400 opacity-50" />
                 </h2>
                 <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-950/60 text-emerald-800 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800/40">
                   Gemini™
@@ -794,6 +841,7 @@ export function AiAssistantModal({
         </div>
 
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
