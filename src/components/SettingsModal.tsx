@@ -57,7 +57,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
-  const [defaultModel, setDefaultModel] = useState<'flash' | 'pro'>('flash');
+  const [defaultModel, setDefaultModel] = useState<'flash' | 'pro' | 'flash-lite' | 'pro-thinking'>('flash');
   const [activeTab, setActiveTab] = useState<'ai' | 'editor' | 'misc'>('ai');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; isCloudDisabled?: boolean } | null>(null);

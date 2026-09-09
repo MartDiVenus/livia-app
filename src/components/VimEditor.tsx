@@ -26,9 +26,11 @@ import { kotlin } from '@codemirror/legacy-modes/mode/clike';
 
 import { VimMode, FileFormat, AiProfile } from '../types';
 import { registerVimCommands } from '../lib/vimCommands';
-import { Code, Sparkles, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
+import { Code, Sparkles, ListTree, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
 import { renderRichPreviewContent } from '../utils/previewRenderer';
 import { AiAssistantModal } from './AiAssistantModal';
+import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
+import { TableOfContents } from './TableOfContents';
 
 interface VimEditorProps {
   content: string;
@@ -102,6 +104,24 @@ export function VimEditor({
   onOpenAiProfilesModal
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+
+  // Added logic to listen for custom events from TOC
+  useEffect(() => {
+    const handleGotoLine = (e: CustomEvent<{ line: number }>) => {
+      if (editorRef.current?.view) {
+        const view = editorRef.current.view;
+        const linePos = view.state.doc.line(Math.min(e.detail.line, view.state.doc.lines)).from;
+        view.dispatch({
+          selection: { anchor: linePos },
+          effects: EditorView.scrollIntoView(linePos, { y: 'center' })
+        });
+      }
+    };
+    window.addEventListener('livia-goto-line', handleGotoLine as EventListener);
+    return () => {
+      window.removeEventListener('livia-goto-line', handleGotoLine as EventListener);
+    };
+  }, []);
   const proxyInputRef = useRef<HTMLTextAreaElement>(null);
   const isInsertModeRef = useRef(false);
   const setContentRef = useRef(setContent);
@@ -396,6 +416,7 @@ export function VimEditor({
   };
 
   const [showPreview, setShowPreview] = useState(false);
+  const [showToc, setShowToc] = useState(true);
   const [isPreviewFullScreen, setIsPreviewFullScreen] = useState(false);
   const [isMasterCopied, setIsMasterCopied] = useState(false);
 
@@ -1292,9 +1313,15 @@ export function VimEditor({
       </div>
 
       <div className="flex-1 flex overflow-hidden min-h-0 min-w-0">
-        <div className={`flex-1 flex relative overflow-hidden bg-gray-50 dark:bg-[#16181D] transition-colors duration-200 min-w-0 min-h-0 ${
-          showPreview ? (isPreviewFullScreen ? 'hidden' : 'hidden lg:flex border-r border-gray-200 dark:border-[#1E2127]') : ''
-        }`}>
+        <PanelGroup orientation="horizontal" id="livia-layout">
+          {/* Code Editor Panel */}
+          {(!showPreview || !isPreviewFullScreen) && (
+            <Panel 
+              defaultSize={showPreview ? 50 : 100} 
+              minSize={15} 
+              className={`flex relative overflow-hidden bg-gray-50 dark:bg-[#16181D] transition-colors duration-200 min-w-0 min-h-0`}
+            >
+            
           <div className={`flex-1 overflow-hidden ${currentMode === 'insert' ? 'cm-mode-insert' : 'cm-mode-' + currentMode}`} style={{ fontSize: `${editorFontSize}px` }}>
             <CodeMirror
               key={`${filename}_${fileSessionId}`}
@@ -1313,15 +1340,23 @@ export function VimEditor({
               onChange={handleEditorChange}
               className="h-full"
             />
+          
           </div>
-        </div>
+            </Panel>
+          )}
 
-        {/* Live Formatted Markdown & XML Rich Preview Pane */}
-        {(showPreview) && (
-          <div className="flex-1 bg-gray-50 dark:bg-[#0D0F12] p-4 sm:p-6 font-mono text-xs overflow-y-auto leading-6 select-text border-l border-gray-200 dark:border-[#1E2127] transition-colors duration-200"
-               style={{ fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace' }}>
-            
-            {!isPreviewFullScreen && (
+          {showPreview && !isPreviewFullScreen && (
+            <PanelResizeHandle className="w-1.5 sm:w-2 bg-gray-200 dark:bg-[#2D2D2D] hover:bg-blue-400 dark:hover:bg-blue-500 active:bg-blue-600 cursor-col-resize transition-colors z-10 flex-shrink-0" />
+          )}
+
+          {/* Preview Pane */}
+          {showPreview && (
+            <Panel defaultSize={50} minSize={20} className="flex min-h-0 min-w-0 bg-gray-50 dark:bg-[#0D0F12] transition-colors duration-200">
+              <PanelGroup orientation="horizontal">
+                
+                {/* Rich Preview Content */}
+                <Panel minSize={30} className="flex-1 p-4 sm:p-6 font-mono text-xs overflow-y-auto leading-6 select-text" style={{ fontFamily: '"DejaVu Sans Mono", "Courier New", Courier, monospace' }}>
+                  {!isPreviewFullScreen && (
               <div className="flex flex-wrap justify-between items-center border-b border-gray-200 dark:border-[#2D2D2D] pb-3 mb-4 gap-2">
                 <div className="flex items-center gap-2">
                   <span className="text-xs font-bold text-gray-700 dark:text-zinc-200 uppercase flex items-center gap-1.5 font-sans">
@@ -1354,6 +1389,17 @@ export function VimEditor({
                     </button>
                   </div>
                   
+                  
+                  {format === 'md' && (
+                    <button
+                      type="button"
+                      onClick={() => setShowToc(!showToc)}
+                      className={`hidden lg:flex p-1.5 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg transition-all items-center justify-center shadow-xs ${showToc ? 'text-blue-600 dark:text-[#8AB4F8] hover:bg-blue-50 dark:hover:bg-blue-900/30' : 'text-gray-600 hover:text-gray-900 dark:text-zinc-400 dark:hover:text-white hover:bg-gray-100 dark:hover:bg-zinc-800'}`}
+                      title={lang === 'it' ? "Mostra/Nascondi Indice" : "Toggle Outline"}
+                    >
+                      <ListTree size={13} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => setIsPreviewFullScreen(true)}
@@ -1374,14 +1420,32 @@ export function VimEditor({
                 </div>
               </div>
             )}
-
-            <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
+                  <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
               {renderRichPreviewContent(content, format, theme)}
             </div>
-          </div>
-        )}
+                </Panel>
+                
+                {/* TOC Panel */}
+                {format === 'md' && showToc && (
+                  <>
+                    <PanelResizeHandle className="w-1.5 sm:w-2 bg-gray-200 dark:bg-[#2D2D2D] hover:bg-blue-400 dark:hover:bg-blue-500 active:bg-blue-600 cursor-col-resize transition-colors z-10 flex-shrink-0" />
+                    <Panel defaultSize={25} minSize={15} className="bg-white dark:bg-[#16181D] overflow-hidden">
+                      <TableOfContents 
+                   content={content}
+                   lang={lang}
+                   onNavigate={(line) => {
+                     window.dispatchEvent(new CustomEvent('livia-goto-line', { detail: { line } }));
+                   }}
+                />
+                    </Panel>
+                  </>
+                )}
+                
+              </PanelGroup>
+            </Panel>
+          )}
+        </PanelGroup>
       </div>
-
       {/* Proxy input for Vim commands on mobile */ }
       <textarea
         ref={proxyInputRef}

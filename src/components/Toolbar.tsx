@@ -5,6 +5,7 @@
 
 import React, { useRef, useState, useEffect } from 'react';
 import { 
+  Globe,
   FileText, 
   FolderOpen,
   Cloud, 
@@ -42,6 +43,7 @@ import mammoth from 'mammoth';
 import { convertGoogleDocsHtmlToMarkdown, sanitizeText } from '../utils/googleDocsHelper';
 
 interface ToolbarProps {
+  onOpenUrlImport?: () => void;
   filename: string;
   setFilename: (name: string) => void;
   format: FileFormat;
@@ -78,6 +80,7 @@ interface ToolbarProps {
 }
 
 export function Toolbar({
+  onOpenUrlImport,
   filename,
   setFilename,
   format,
@@ -513,6 +516,22 @@ export function Toolbar({
                     onClick={() => {
                       setImportMenuOpen(false);
                       setMobileMenuOpen(false);
+                      if (onOpenUrlImport) onOpenUrlImport();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
+                  >
+                    <Globe size={16} className="text-emerald-500 shrink-0" />
+                    <div className="flex flex-col">
+                      <span className="font-bold">Import from URL</span>
+                      <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Scarica da link diretto (.md, .txt)' : 'Download direct link (.md, .txt)'}</span>
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setImportMenuOpen(false);
+                      setMobileMenuOpen(false);
                       fileInputRef.current?.click();
                     }}
                     className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
@@ -553,6 +572,8 @@ export function Toolbar({
                       <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">{lang === 'it' ? 'Seleziona documento' : 'Select document'}</span>
                     </div>
                   </button>
+
+                  
                 </div>
               )}
             </div>
@@ -685,6 +706,7 @@ export function Toolbar({
                 <span className="inline">{lang === 'it' ? 'Strumenti' : 'Tools'}</span>
               </button>
             )}
+
 
             {setShowAuxiliaryKeyboard && (
               <button

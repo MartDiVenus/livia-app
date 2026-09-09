@@ -278,7 +278,7 @@ export function renderRichPreviewContent(content: string, format: FileFormat, th
       // Headers
       if (/^#\s+/.test(line)) {
         elements.push(
-          <h1 key={i} className="text-2xl font-bold text-blue-600 dark:text-[#8AB4F8] mt-6 mb-3 border-b border-gray-200 dark:border-zinc-800 pb-2  tracking-tight">
+          <h1 key={i} id={`heading-${i}`} className="text-2xl font-bold text-blue-600 dark:text-[#8AB4F8] mt-6 mb-3 border-b border-gray-200 dark:border-zinc-800 pb-2  tracking-tight">
             {parseInline(line.replace(/^#\s+/, ''))}
           </h1>
         );
@@ -287,7 +287,7 @@ export function renderRichPreviewContent(content: string, format: FileFormat, th
       }
       if (/^##\s+/.test(line)) {
         elements.push(
-          <h2 key={i} className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-5 mb-2  tracking-tight">
+          <h2 key={i} id={`heading-${i}`} className="text-xl font-bold text-emerald-600 dark:text-emerald-400 mt-5 mb-2  tracking-tight">
             {parseInline(line.replace(/^##\s+/, ''))}
           </h2>
         );
@@ -296,7 +296,7 @@ export function renderRichPreviewContent(content: string, format: FileFormat, th
       }
       if (/^###\s+/.test(line)) {
         elements.push(
-          <h3 key={i} className="text-lg font-bold text-purple-600 dark:text-purple-400 mt-4 mb-2 ">
+          <h3 key={i} id={`heading-${i}`} className="text-lg font-bold text-purple-600 dark:text-purple-400 mt-4 mb-2 ">
             {parseInline(line.replace(/^###\s+/, ''))}
           </h3>
         );

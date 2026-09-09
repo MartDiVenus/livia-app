@@ -170,6 +170,10 @@ function parseLvarc(content: string, isMobileOverride?: boolean): LvaConfig {
   return config;
 }
 
+import { UrlImportModal } from './components/UrlImportModal';
+import { MarkdownPreview } from './components/MarkdownPreview';
+import { TableOfContents } from './components/TableOfContents';
+
 export default function App() {
   // Config States (determined by .lvarc and device type)
   const [showLineNumbers, setShowLineNumbers] = useState<boolean>(true);
@@ -178,6 +182,10 @@ export default function App() {
     return checkIsMobile() ? 20 : 16;
   });
   const [syntaxHighlightOn, setSyntaxHighlightOn] = useState<boolean>(true);
+
+  // Markdown States
+  const [showMdPreview, setShowMdPreview] = useState<boolean>(false);
+  const [isUrlImportModalOpen, setIsUrlImportModalOpen] = useState<boolean>(false);
 
   // Virtual File System State
   const [fileHistory, setFileHistory] = useState<string[]>([]);
@@ -1112,6 +1120,36 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  const handleUrlImport = (importedContent: string, suggestedFilename: string) => {
+    // Generate unique name if it exists
+    let newName = suggestedFilename;
+    let counter = 1;
+    while (virtualFiles.some(f => f.name.toLowerCase() === newName.toLowerCase())) {
+      const parts = suggestedFilename.split('.');
+      const ext = parts.length > 1 ? `.${parts.pop()}` : '';
+      newName = `${parts.join('.')}-${counter}${ext}`;
+      counter++;
+    }
+    
+    // Add to virtual files and open it
+    const val = sanitizeText(importedContent);
+    setVirtualFiles(prev => [...prev, {
+      name: newName,
+      content: val,
+      format: newName.toLowerCase().endsWith('.md') ? 'md' : 'txt'
+    }]);
+    
+    if (filename !== newName) {
+      if (!fileHistory.includes(filename) && filename.trim() !== '') {
+        setFileHistory(prev => [...prev, filename].slice(-10));
+      }
+      setFilename(newName);
+      setFormat(newName.toLowerCase().endsWith('.md') ? 'md' : 'txt');
+    }
+    setContent(val);
+    showToast(lang === 'it' ? `File importato come ${newName}` : `File imported as ${newName}`, 'success');
+  };
+
   // Sync internal yank buffer to Android / Debian physical clipboard
   const handleSyncClipboard = (textToYank: string) => {
     if (!textToYank) return;
@@ -1353,7 +1391,8 @@ export default function App() {
         }}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         onOpenAiAssistant={handleOpenAiAssistant}
-      />
+          onOpenUrlImport={() => setIsUrlImportModalOpen(true)}
+/>
 
       {/* Main Workspace Frame */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-1 sm:p-4 flex flex-col lg:flex-row gap-2 sm:gap-4 overflow-hidden min-h-0 min-w-0">
@@ -1427,7 +1466,7 @@ export default function App() {
             </div>
           </div>
 
-          <VimEditor
+                    <VimEditor
 
             content={content}
             setContent={(val) => {
@@ -2978,6 +3017,13 @@ export default function App() {
           showToast={showToast}
         />
 
-    </div>
+    
+        <UrlImportModal
+          isOpen={isUrlImportModalOpen}
+          onClose={() => setIsUrlImportModalOpen(false)}
+          lang={lang}
+          onImport={handleUrlImport}
+        />
+</div>
   );
 }
