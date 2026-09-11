@@ -106,7 +106,7 @@ export function AiProfilesModal({ isOpen, onClose, lang, profiles, setProfiles, 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-opacity font-sans">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm transition-opacity font-sans">
       <div className="bg-white dark:bg-[#16181D] w-full max-w-3xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-gray-200 dark:border-[#2D2D2D] relative">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-100 dark:border-[#2D2D2D] bg-gray-50/50 dark:bg-[#0D0F12]">

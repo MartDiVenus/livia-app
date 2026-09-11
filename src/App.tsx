@@ -2672,7 +2672,7 @@ export default function App() {
 
       {/* Google Drive Full-Screen Modal Overlay */}
       {isDriveFullScreen && (
-        <div className="fixed inset-0 z-50 bg-white/95 dark:bg-[#0D0F12]/95 backdrop-blur-md p-6 flex flex-col font-sans">
+        <div className="fixed inset-0 z-[9999] bg-white/95 dark:bg-[#0D0F12]/95 backdrop-blur-md p-6 flex flex-col font-sans">
           <div className="flex items-center justify-between pb-4 border-b border-gray-200 dark:border-[#2D2D2D] mb-4">
             <div className="flex items-center gap-2">
               {drivePickerFilter === 'docs' ? <FileText size={20} className="text-blue-600" /> : <Cloud size={20} className="text-blue-500" />}
@@ -2857,7 +2857,7 @@ export default function App() {
 
       {/* Pending Action Modal (Import / Tear) */}
       {pendingFileAction && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 font-sans">
           <div className="bg-white dark:bg-[#16181D] w-full max-w-sm rounded-2xl shadow-2xl border border-gray-200 dark:border-[#2D2D2D] overflow-hidden flex flex-col">
             <div className="p-4 border-b border-gray-100 dark:border-[#2D2D2D] flex items-center justify-between bg-gray-50/50 dark:bg-[#0D0F12]/50">
               <h3 className="font-bold text-gray-800 dark:text-zinc-100 flex items-center gap-2">

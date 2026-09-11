@@ -104,3 +104,8 @@ vite-error-overlay { display: none !important; }
 .dark .cm-insert-mode .cm-line {
   caret-color: #8ab4f8 !important;
 }
+
+/* Ensure CodeMirror panels (like Vim command line) are below our full-screen modals */
+.cm-panels, .cm-panel, .cm-vim-panel {
+  z-index: 10 !important;
+}
