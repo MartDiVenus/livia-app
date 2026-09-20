@@ -3,6 +3,7 @@
   "appId": "1:769681664076:web:ccb5784de220b1ffff2ce9",
   "apiKey": "AIzaSyCdJQ3KPDrnOv746gPNoaCJyL7K5-R42SI",
   "authDomain": "livia-editor.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-livia-6ee1da3e-5d5a-4428-952c-c194387b9183",
   "storageBucket": "livia-editor.firebasestorage.app",
   "messagingSenderId": "769681664076",
   "measurementId": "",

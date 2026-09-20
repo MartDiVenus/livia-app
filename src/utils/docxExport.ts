@@ -1,6 +1,6 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel, ImageRun } from "docx";
 
-export async function exportToDocx(filename: string, content: string): Promise<void> {
+export async function createDocxBlob(content: string): Promise<Blob> {
   const lines = content.split('\n');
   const children: any[] = [];
 
@@ -23,7 +23,6 @@ export async function exportToDocx(filename: string, content: string): Promise<v
       if (imgMatch) {
         url = imgMatch[2];
       } else if (refImgMatch) {
-        // Need to extract references first. Let's do a quick pass if not already done.
         const refKey = refImgMatch[2];
         const refLine = lines.find(l => l.startsWith(`[${refKey}]:`));
         if (refLine) {
@@ -33,15 +32,13 @@ export async function exportToDocx(filename: string, content: string): Promise<v
 
       if (url) {
         if (url.includes('drive.google.com')) {
-            const driveIdMatch = url.match(/\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
-            if (driveIdMatch && driveIdMatch[1]) {
-              // The thumbnail endpoint is currently the most reliable way to hotlink Drive images
-              url = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1000`;
-            }
+          const driveIdMatch = url.match(/\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
+          if (driveIdMatch && driveIdMatch[1]) {
+            url = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1000`;
           }
+        }
 
         try {
-          // Fetch image buffer
           const response = await fetch(url);
           const buffer = await response.arrayBuffer();
           
@@ -53,7 +50,7 @@ export async function exportToDocx(filename: string, content: string): Promise<v
                   width: 400,
                   height: 300
                 },
-                type: 'png' // Add type to satisfy CoreImageOptions
+                type: 'png'
               })
             ]
           }));
@@ -63,7 +60,6 @@ export async function exportToDocx(filename: string, content: string): Promise<v
         }
       }
     }
-
 
     if (trimmed.startsWith('# ')) {
       children.push(new Paragraph({ text: trimmed.substring(2), heading: HeadingLevel.HEADING_1 }));
@@ -90,7 +86,11 @@ export async function exportToDocx(filename: string, content: string): Promise<v
     }]
   });
 
-  const blob = await Packer.toBlob(doc);
+  return await Packer.toBlob(doc);
+}
+
+export async function exportToDocx(filename: string, content: string): Promise<void> {
+  const blob = await createDocxBlob(content);
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;

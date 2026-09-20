@@ -66,6 +66,7 @@ import {
   readFromDrive,
   saveToDrive,
   createDriveFolder,
+  getMimeTypeForFilename,
   DriveFile
 } from './utils/googleDrive';
 
@@ -779,7 +780,7 @@ export default function App() {
               mimeType = metaData.mimeType;
             }
 
-            const fileContent = await readFromDrive(driveToken, fileId, mimeType);
+            const fileContent = await readFromDrive(driveToken, fileId, mimeType, name);
             setContent(fileContent);
             setFilename(name);
             setActiveDriveFileId(fileId);
@@ -989,14 +990,14 @@ export default function App() {
     if (!driveToken) return;
     setIsLoadingDrive(true);
     try {
-      const fileContent = await readFromDrive(driveToken, file.id, file.mimeType);
+      const fileContent = await readFromDrive(driveToken, file.id, file.mimeType, file.name);
       setContent(fileContent);
       setFilename(file.name);
       setActiveDriveFileId(file.id);
       
-      const ext = file.name.split('.').pop() || 'txt';
+      const ext = file.name.split('.').pop()?.toLowerCase() || 'txt';
       const formatMap: Record<string, FileFormat> = {
-        txt: 'txt', md: 'md', json: 'json', xml: 'xml', py: 'py', kt: 'kt', js: 'js', ts: 'ts', sh: 'bash', bash: 'bash', tex: 'tex'
+        txt: 'txt', md: 'md', docx: 'docx', json: 'json', xml: 'xml', py: 'py', kt: 'kt', js: 'js', ts: 'ts', sh: 'bash', bash: 'bash', tex: 'tex', java: 'java', c: 'c', cpp: 'cpp', ly: 'ly', lilypond: 'ly', html: 'html', htm: 'html', css: 'css', sql: 'sql', rs: 'rs', go: 'go'
       };
       setFormat(formatMap[ext] || 'txt');
       
@@ -1244,7 +1245,8 @@ export default function App() {
         return;
       }
       
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const mimeType = getMimeTypeForFilename(filename);
+      const blob = new Blob([new TextEncoder().encode(content)], { type: `${mimeType};charset=utf-8` });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -2373,7 +2375,7 @@ export default function App() {
                                         if (!driveToken) return;
                                         setIsLoadingDrive(true);
                                         try {
-                                          const fileContent = await readFromDrive(driveToken, file.id, file.mimeType);
+                                          const fileContent = await readFromDrive(driveToken, file.id, file.mimeType, file.name);
                                           const success = await copyToClipboard(fileContent);
                                           if (success) {
                                             showToast(lang === 'it' ? `Contenuto di "${file.name}" strappato!` : `Content of "${file.name}" torn!`, 'success');
@@ -2626,7 +2628,7 @@ export default function App() {
       </main>
 
       {/* Auxiliary Key Bar - Rendered conditionally with North-South Resizer Handle */}
-      {showAuxiliaryKeyboard && (
+      {!isDriveFullScreen && showAuxiliaryKeyboard && (
         <div 
           style={{ height: `${keyboardHeight}px` }}
           className="relative shrink-0 border-t border-gray-200 dark:border-[#2D2D2D] bg-gray-100 dark:bg-[#16181D] flex flex-col min-h-[80px] max-h-[32dvh] lg:max-h-[450px] transition-all duration-75"
@@ -2672,7 +2674,7 @@ export default function App() {
 
       {/* Google Drive Full-Screen Modal Overlay */}
       {isDriveFullScreen && (
-        <div className="fixed inset-0 z-[9999] bg-white/95 dark:bg-[#0D0F12]/95 backdrop-blur-md p-6 flex flex-col font-sans">
+        <div className="fixed inset-0 z-[100000] bg-white dark:bg-[#0D0F12] p-4 sm:p-6 flex flex-col font-sans overflow-hidden">
           <div className="flex items-center justify-between pb-4 border-b border-gray-200 dark:border-[#2D2D2D] mb-4">
             <div className="flex items-center gap-2">
               {drivePickerFilter === 'docs' ? <FileText size={20} className="text-blue-600" /> : <Cloud size={20} className="text-blue-500" />}
@@ -2826,7 +2828,7 @@ export default function App() {
                             if (!driveToken) return;
                             setIsLoadingDrive(true);
                             try {
-                              const fileContent = await readFromDrive(driveToken, file.id, file.mimeType);
+                              const fileContent = await readFromDrive(driveToken, file.id, file.mimeType, file.name);
                               const success = await copyToClipboard(fileContent);
                               if (success) {
                                 showToast(lang === 'it' ? `Contenuto di "${file.name}" strappato!` : `Content of "${file.name}" torn!`, 'success');
@@ -2907,7 +2909,7 @@ export default function App() {
                       if (!driveToken) return;
                       setIsLoadingDrive(true);
                       try {
-                        const fileContent = await readFromDrive(driveToken, action.driveFile.id, action.driveFile.mimeType);
+                        const fileContent = await readFromDrive(driveToken, action.driveFile.id, action.driveFile.mimeType, action.name);
                         const success = await copyToClipboard(fileContent);
                         if (success) showToast(lang === 'it' ? `Contenuto di "${action.name}" strappato!` : `Content of "${action.name}" torn!`, 'success');
                         else showToast(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.', 'error');

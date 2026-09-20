@@ -502,18 +502,26 @@ export async function saveAsGoogleDoc(
     mimeType: 'application/vnd.google-apps.document',
   };
 
-  const boundary = 'livia_gdocs_boundary_999';
+  const boundary = 'livia_gdocs_boundary_' + Date.now();
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelim = `\r\n--${boundary}--`;
 
-  const multipartBody =
-    delimiter +
-    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-    JSON.stringify(metadata) +
-    delimiter +
-    'Content-Type: text/html; charset=UTF-8\r\n\r\n' +
-    htmlContent +
-    closeDelim;
+  const metadataBlob = new Blob([JSON.stringify(metadata)], {
+    type: 'application/json; charset=UTF-8',
+  });
+  const htmlBlob = new Blob([new TextEncoder().encode(htmlContent)], {
+    type: 'text/html; charset=UTF-8',
+  });
+
+  const multipartBlob = new Blob([
+    delimiter,
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+    metadataBlob,
+    delimiter,
+    'Content-Type: text/html; charset=UTF-8\r\n\r\n',
+    htmlBlob,
+    closeDelim,
+  ], { type: `multipart/related; boundary=${boundary}` });
 
   const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
     method: 'POST',
@@ -521,7 +529,7 @@ export async function saveAsGoogleDoc(
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': `multipart/related; boundary=${boundary}`,
     },
-    body: multipartBody,
+    body: multipartBlob,
   });
 
   if (!res.ok) {
