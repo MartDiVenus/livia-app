@@ -67,7 +67,8 @@ export function renderRichPreviewContent(content: string, format: FileFormat, th
         // Color tags <color:#HEX>text</color>
         const colorMatch = remaining.match(/^<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>/i);
         if (colorMatch) {
-          const colorVal = colorMatch[1];
+          const rawColor = colorMatch[1];
+          const colorVal = rawColor.startsWith('#') || /^[a-zA-Z]+$/.test(rawColor) ? rawColor : `#${rawColor}`;
           const innerTxt = colorMatch[2];
           parts.push(
             <span key={keyCounter++} style={{ color: colorVal, fontWeight: 600 }}>

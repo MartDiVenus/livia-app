@@ -278,29 +278,42 @@ export function fixMojibake(str: string): string {
   if (!/[\u00C2\u00C3\u00E2]/.test(str)) {
     return str;
   }
-  return str
-    .replace(/Ã[\u00A0\s]/g, 'à')
-    .replace(/Ã¨/g, 'è')
-    .replace(/Ã©/g, 'é')
-    .replace(/Ã¬/g, 'ì')
-    .replace(/Ã²/g, 'ò')
-    .replace(/Ã¹/g, 'ù')
-    .replace(/Ã€/g, 'À')
-    .replace(/Ãˆ/g, 'È')
-    .replace(/Ã‰/g, 'É')
-    .replace(/ÃŒ/g, 'Ì')
-    .replace(/Ã’/g, 'Ò')
-    .replace(/Ã™/g, 'Ù')
-    .replace(/â€™/g, '’')
-    .replace(/â€˜/g, '‘')
-    .replace(/â€œ/g, '“')
-    .replace(/â€\u009d/g, '”')
-    .replace(/â€”/g, '—')
-    .replace(/â€“/g, '–')
-    .replace(/â‚¬/g, '€')
-    .replace(/Â«/g, '«')
-    .replace(/Â»/g, '»')
-    .replace(/Â°/g, '°');
+
+  // 1. Try high-precision binary re-decoding (reverses Latin-1/Windows-1252 misinterpretations of UTF-8 byte streams)
+  try {
+    const bytes = Uint8Array.from(str, c => {
+      const code = c.charCodeAt(0);
+      if (code > 255) throw new Error('Not single byte');
+      return code;
+    });
+    const decoded = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    return decoded;
+  } catch (_e) {
+    // 2. Targeted regex substitution fallback for mixed or partially corrupted strings
+    return str
+      .replace(/Ã[\u00A0\s]/g, 'à')
+      .replace(/Ã¨/g, 'è')
+      .replace(/Ã©/g, 'é')
+      .replace(/Ã¬/g, 'ì')
+      .replace(/Ã²/g, 'ò')
+      .replace(/Ã¹/g, 'ù')
+      .replace(/Ã€/g, 'À')
+      .replace(/Ãˆ/g, 'È')
+      .replace(/Ã‰/g, 'É')
+      .replace(/ÃŒ/g, 'Ì')
+      .replace(/Ã’/g, 'Ò')
+      .replace(/Ã™/g, 'Ù')
+      .replace(/â€™/g, '’')
+      .replace(/â€˜/g, '‘')
+      .replace(/â€œ/g, '“')
+      .replace(/â€\u009d/g, '”')
+      .replace(/â€”/g, '—')
+      .replace(/â€“/g, '–')
+      .replace(/â‚¬/g, '€')
+      .replace(/Â«/g, '«')
+      .replace(/Â»/g, '»')
+      .replace(/Â°/g, '°');
+  }
 }
 
 export async function readFromDrive(accessToken: string, fileId: string, mimeType?: string, fileName?: string): Promise<string> {
@@ -399,8 +412,6 @@ export async function saveToDrive(
 ): Promise<{ id: string; name: string }> {
   const mimeType = getMimeTypeForFilename(filename);
   const boundary = 'livia_drive_boundary_' + Date.now() + '_' + Math.random().toString(36).substring(2);
-  const delimiter = `\r\n--${boundary}\r\n`;
-  const close_delim = `\r\n--${boundary}--`;
 
   // For Microsoft Word DOCX files, build a genuine binary OpenXML .docx Blob
   let contentBlob: Blob;
@@ -415,6 +426,7 @@ export async function saveToDrive(
       });
     }
   } else {
+    // Pure UTF-8 byte stream for Markdown and code files
     contentBlob = new Blob([new TextEncoder().encode(content)], {
       type: `${mimeType}; charset=UTF-8`,
     });
@@ -428,18 +440,14 @@ export async function saveToDrive(
       mimeType: mimeType,
     };
 
-    const metadataBlob = new Blob([JSON.stringify(metadata)], {
-      type: 'application/json; charset=UTF-8',
-    });
-
     const multipartBlob = new Blob([
-      delimiter,
+      `--${boundary}\r\n`,
       'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-      metadataBlob,
-      delimiter,
+      JSON.stringify(metadata),
+      `\r\n--${boundary}\r\n`,
       `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n`,
       contentBlob,
-      close_delim,
+      `\r\n--${boundary}--`,
     ], { type: `multipart/related; boundary=${boundary}` });
 
     const patchUrl = `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=multipart`;
@@ -500,18 +508,14 @@ export async function saveToDrive(
       metadata.parents = [parentFolderId];
     }
 
-    const metadataBlob = new Blob([JSON.stringify(metadata)], {
-      type: 'application/json; charset=UTF-8',
-    });
-
     const multipartBlob = new Blob([
-      delimiter,
+      `--${boundary}\r\n`,
       'Content-Type: application/json; charset=UTF-8\r\n\r\n',
-      metadataBlob,
-      delimiter,
+      JSON.stringify(metadata),
+      `\r\n--${boundary}\r\n`,
       `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n`,
       contentBlob,
-      close_delim,
+      `\r\n--${boundary}--`,
     ], { type: `multipart/related; boundary=${boundary}` });
 
     const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {

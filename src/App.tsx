@@ -1238,10 +1238,19 @@ export default function App() {
   // Export content to raw text or code file
   const handleSaveFile = async () => {
     try {
-      if (filename.toLowerCase().endsWith('.docx')) {
+      const isDocx = format === 'docx' || filename.toLowerCase().endsWith('.docx');
+      if (isDocx) {
         const { exportToDocx } = await import('./utils/docxExport');
-        await exportToDocx(filename, content);
-        showToast(`File "${filename}" salvato e scaricato come DOCX.`, 'success');
+        const effectiveName = filename.toLowerCase().endsWith('.docx')
+          ? filename
+          : `${filename.replace(/\.[^/.]+$/, "")}.docx`;
+        await exportToDocx(effectiveName, content);
+        showToast(
+          lang === 'it' 
+            ? `File "${effectiveName}" salvato e scaricato come DOCX.` 
+            : `File "${effectiveName}" saved and downloaded as DOCX.`, 
+          'success'
+        );
         return;
       }
       
@@ -1254,10 +1263,43 @@ export default function App() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showToast(`File "${filename}" salvato e scaricato.`, 'success');
-    } catch (err) {
-      showToast('Errore durante il salvataggio del file.', 'error');
+      setTimeout(() => {
+        try { URL.revokeObjectURL(url); } catch (e) {}
+      }, 60000);
+      showToast(lang === 'it' ? `File "${filename}" salvato e scaricato.` : `File "${filename}" saved and downloaded.`, 'success');
+    } catch (err: any) {
+      console.error('Errore durante il salvataggio del file:', err);
+      showToast(
+        lang === 'it' 
+          ? `Errore durante il salvataggio del file: ${err?.message || ''}` 
+          : `Error saving file: ${err?.message || ''}`, 
+        'error'
+      );
+    }
+  };
+
+  // Export to Microsoft Word (.docx) helper
+  const handleExportDocx = async () => {
+    try {
+      showToast(lang === 'it' ? 'Generazione documento Word (.docx)...' : 'Generating Word document (.docx)...', 'info');
+      const { exportToDocx } = await import('./utils/docxExport');
+      const baseName = filename.includes('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+      const docxName = `${baseName || 'documento'}.docx`;
+      await exportToDocx(docxName, content);
+      showToast(
+        lang === 'it' 
+          ? `Documento esportato in Word ("${docxName}") con successo!` 
+          : `Document exported to Word ("${docxName}") successfully!`, 
+        'success'
+      );
+    } catch (err: any) {
+      console.error('DOCX export error:', err);
+      showToast(
+        lang === 'it' 
+          ? `Impossibile esportare in DOCX: ${err?.message || ''}` 
+          : `Failed to export to DOCX: ${err?.message || ''}`, 
+        'error'
+      );
     }
   };
 
@@ -1364,6 +1406,7 @@ export default function App() {
         onExportPDF={handleExportPDF}
         onExportTex={handleExportTex}
         onExportMd={handleExportMd}
+        onExportDocx={handleExportDocx}
         onSaveFile={handleSaveFile}
         onCopyAll={handleCopyAll}
         theme={theme}

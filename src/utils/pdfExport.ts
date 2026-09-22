@@ -73,8 +73,14 @@ export function convertMarkdownToPdfHtml(content: string, filename: string): str
       .replace(/>/g, '&gt;');
 
     // Custom Color tags <color:#3B82F6>text</color>
-    s = s.replace(/&lt;color:(#?[a-zA-Z0-9_]+)&gt;(.*?)&lt;\/color&gt;/gi, '<span style="color: $1; font-weight: 600;">$2</span>');
-    s = s.replace(/<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>/gi, '<span style="color: $1; font-weight: 600;">$2</span>');
+    s = s.replace(/&lt;color:(#?[a-zA-Z0-9_]+)&gt;(.*?)&lt;\/color&gt;/gi, (_m, col, txt) => {
+      const c = col.startsWith('#') || /^[a-zA-Z]+$/.test(col) ? col : `#${col}`;
+      return `<span style="color: ${c}; font-weight: 600;">${txt}</span>`;
+    });
+    s = s.replace(/<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>/gi, (_m, col, txt) => {
+      const c = col.startsWith('#') || /^[a-zA-Z]+$/.test(col) ? col : `#${col}`;
+      return `<span style="color: ${c}; font-weight: 600;">${txt}</span>`;
+    });
 
     // Images with reference ![alt][ref]
     s = s.replace(/!\[(.*?)\]\[(.*?)\]/g, (match, alt, refKey) => {

@@ -14,7 +14,8 @@ import {
   Sparkles, 
   Info,
   Cloud,
-  FileCode
+  FileCode,
+  Download
 } from 'lucide-react';
 import { 
   copyFormattedForGoogleDocs, 
@@ -100,6 +101,24 @@ export function GoogleDocsModal({
       );
     } catch (err: any) {
       setExportMessage(err.message || (lang === 'it' ? 'Errore durante la creazione del file in Google Docs' : 'Error creating file in Google Docs'));
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  const handleDirectDocxDownload = async () => {
+    try {
+      setIsExporting(true);
+      setExportMessage(lang === 'it' ? 'Generazione file Word (.docx) in corso...' : 'Generating Word (.docx) file...');
+      const { exportToDocx } = await import('../utils/docxExport');
+      const baseName = filename.includes('.') ? filename.substring(0, filename.lastIndexOf('.')) : filename;
+      const docxName = `${baseName || 'documento'}.docx`;
+      await exportToDocx(docxName, content);
+      setExportMessage(lang === 'it' ? `File "${docxName}" scaricato con successo!` : `File "${docxName}" downloaded successfully!`);
+      setTimeout(() => setExportMessage(null), 4000);
+    } catch (err: any) {
+      console.error('Error downloading docx:', err);
+      setExportMessage(lang === 'it' ? `Errore nel download: ${err?.message || ''}` : `Download error: ${err?.message || ''}`);
     } finally {
       setIsExporting(false);
     }
@@ -203,8 +222,8 @@ export function GoogleDocsModal({
             />
           </div>
 
-          {/* Card 3: Save directly as Google Doc / DOCX in Google Drive */}
-          <div className="p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-900/40 bg-indigo-50/20 dark:bg-indigo-950/10 flex items-center justify-between gap-4">
+          {/* Card 3: Save directly as Google Doc / DOCX in Google Drive or Local */}
+          <div className="p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-900/40 bg-indigo-50/20 dark:bg-indigo-950/10 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="font-bold text-gray-900 dark:text-white text-sm flex items-center gap-1.5">
                 <Cloud size={15} className="text-indigo-500" />
@@ -212,18 +231,30 @@ export function GoogleDocsModal({
               </h3>
               <p className="text-gray-500 dark:text-zinc-400 mt-1 leading-relaxed">
                 {lang === 'it'
-                  ? 'Crea direttamente un nuovo documento nativo (.docx / Google Docs™) nel tuo account Google Drive™.'
-                  : 'Creates a native document (.docx / Google Docs™) directly inside your Google Drive™ account.'}
+                  ? 'Salva direttamente il file .docx nativo sul tuo computer oppure caricalo su Google Drive™.'
+                  : 'Save the native .docx file directly to your computer or upload to Google Drive™.'}
               </p>
             </div>
-            <button
-              onClick={handleExportToGoogleDriveDoc}
-              disabled={isExporting}
-              className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl whitespace-nowrap shadow transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <Cloud size={14} />
-              <span>{isExporting ? (lang === 'it' ? 'Salvataggio...' : 'Saving...') : (lang === 'it' ? 'Crea in Google Drive™' : 'Create in Google Drive™')}</span>
-            </button>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleDirectDocxDownload}
+                disabled={isExporting}
+                className="px-3.5 py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded-xl whitespace-nowrap shadow transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Download size={14} />
+                <span>{lang === 'it' ? 'Scarica .docx' : 'Download .docx'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportToGoogleDriveDoc}
+                disabled={isExporting}
+                className="px-3.5 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl whitespace-nowrap shadow transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <Cloud size={14} />
+                <span>{isExporting ? (lang === 'it' ? 'Salvataggio...' : 'Saving...') : (lang === 'it' ? 'Crea in Drive' : 'Create in Drive')}</span>
+              </button>
+            </div>
           </div>
 
           {/* Direct link button */}

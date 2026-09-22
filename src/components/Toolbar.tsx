@@ -55,6 +55,7 @@ interface ToolbarProps {
   onExportPDF: () => void;
   onExportTex: () => void;
   onExportMd: () => void;
+  onExportDocx?: () => void;
   onSaveFile: () => void;
   onCopyAll: () => void;
   theme: 'light' | 'dark' | 'system';
@@ -89,6 +90,7 @@ export function Toolbar({
   onExportPDF,
   onExportTex,
   onExportMd,
+  onExportDocx,
   onSaveFile,
   onCopyAll,
   theme,
@@ -664,6 +666,20 @@ export function Toolbar({
                   >
                     <FileCode size={16} className="text-emerald-500 shrink-0" />
                     <span className="font-bold">MD (Markdown)</span>
+                  </button>
+
+                  {/* DOCX (Word) Direct Export */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExportMenuOpen(false);
+                      setMobileMenuOpen(false);
+                      if (onExportDocx) onExportDocx();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
+                  >
+                    <FileText size={16} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                    <span className="font-bold">DOCX (Word)</span>
                   </button>
 
                   {/* Google Docs Export */}
