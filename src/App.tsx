@@ -16,6 +16,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { AiProfilesModal } from './components/AiProfilesModal';
 import { AuxiliaryKeyboard } from './components/AuxiliaryKeyboard';
 import { exportToPDF } from './utils/pdfExport';
+import { downloadBlob } from './utils/downloadHelper';
 import { copyToClipboard } from './utils/clipboard';
 import { convertToLaTeX } from './utils/latexExport';
 import { generateGeminiContent } from './utils/geminiClient';
@@ -1256,16 +1257,7 @@ export default function App() {
       
       const mimeType = getMimeTypeForFilename(filename);
       const blob = new Blob([new TextEncoder().encode(content)], { type: `${mimeType};charset=utf-8` });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      setTimeout(() => {
-        try { URL.revokeObjectURL(url); } catch (e) {}
-      }, 60000);
+      downloadBlob(blob, filename);
       showToast(lang === 'it' ? `File "${filename}" salvato e scaricato.` : `File "${filename}" saved and downloaded.`, 'success');
     } catch (err: any) {
       console.error('Errore durante il salvataggio del file:', err);
@@ -1322,14 +1314,7 @@ export default function App() {
       const texFilename = `${baseName}.tex`;
       const texContent = convertToLaTeX(filename, content, format);
       const blob = new Blob([texContent], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = texFilename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, texFilename);
       showToast(lang === 'it' ? `Documento esportato in LaTeX ("${texFilename}") con successo!` : `Document exported to LaTeX ("${texFilename}") successfully!`, 'success');
     } catch (err) {
       showToast(lang === 'it' ? 'Impossibile esportare in LaTeX.' : 'Failed to export to LaTeX.', 'error');
@@ -1342,14 +1327,7 @@ export default function App() {
       const baseName = filename.substring(0, filename.lastIndexOf('.')) || filename;
       const mdFilename = `${baseName}.md`;
       const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = mdFilename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      downloadBlob(blob, mdFilename);
       showToast(lang === 'it' ? `Documento esportato in Markdown ("${mdFilename}") con successo!` : `Document exported to Markdown ("${mdFilename}") successfully!`, 'success');
     } catch (err) {
       showToast(lang === 'it' ? 'Impossibile esportare in Markdown.' : 'Failed to export to Markdown.', 'error');

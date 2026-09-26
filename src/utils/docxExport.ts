@@ -10,7 +10,10 @@ import {
   TableCell,
   WidthType,
   BorderStyle,
+  AlignmentType,
+  LevelFormat,
 } from "docx";
+import { downloadBlob } from "./downloadHelper";
 
 /**
  * Cleans string of control characters invalid in XML 1.0 (Word OpenXML)
@@ -70,7 +73,7 @@ function parseFormattedSpans(text: string, currentStyle: Partial<StyledSpan> = {
   const clean = cleanXmlString(text);
   if (!clean) return [];
 
-  const regex = /(<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>)|(`([^`]+)`)|(\*\*\*([^*]+)\*\*\*)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(__([^_]+)__)|(_([^_]+)_)|(~~([^~]+)~~)/g;
+  const regex = /(<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>)|(\[([^\]]+)\]\(([^)]+)\))|(`([^`]+)`)|(\*\*\*([^*]+)\*\*\*)|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(__([^_]+)__)|(_([^_]+)_)|(~~([^~]+)~~)/g;
   const spans: StyledSpan[] = [];
   let lastIdx = 0;
   let match: RegExpExecArray | null;
@@ -87,26 +90,30 @@ function parseFormattedSpans(text: string, currentStyle: Partial<StyledSpan> = {
       const inner = match[3];
       spans.push(...parseFormattedSpans(inner, { ...currentStyle, color: colorVal }));
     } else if (match[4]) {
+      // Link: [text](url) -> styled with blue text
+      const linkText = match[5];
+      spans.push(...parseFormattedSpans(linkText, { ...currentStyle, color: "2563EB" }));
+    } else if (match[7]) {
       // Inline Code: `code`
-      spans.push({ text: match[5], ...currentStyle, code: true });
-    } else if (match[6]) {
+      spans.push({ text: match[8], ...currentStyle, code: true });
+    } else if (match[9]) {
       // Bold + Italic: ***text***
-      spans.push(...parseFormattedSpans(match[7], { ...currentStyle, bold: true, italics: true }));
-    } else if (match[8]) {
+      spans.push(...parseFormattedSpans(match[10], { ...currentStyle, bold: true, italics: true }));
+    } else if (match[11]) {
       // Bold: **text**
-      spans.push(...parseFormattedSpans(match[9], { ...currentStyle, bold: true }));
-    } else if (match[10]) {
+      spans.push(...parseFormattedSpans(match[12], { ...currentStyle, bold: true }));
+    } else if (match[13]) {
       // Italic: *text*
-      spans.push(...parseFormattedSpans(match[11], { ...currentStyle, italics: true }));
-    } else if (match[12]) {
+      spans.push(...parseFormattedSpans(match[14], { ...currentStyle, italics: true }));
+    } else if (match[15]) {
       // Bold: __text__
-      spans.push(...parseFormattedSpans(match[13], { ...currentStyle, bold: true }));
-    } else if (match[14]) {
+      spans.push(...parseFormattedSpans(match[16], { ...currentStyle, bold: true }));
+    } else if (match[17]) {
       // Italic: _text_
-      spans.push(...parseFormattedSpans(match[15], { ...currentStyle, italics: true }));
-    } else if (match[16]) {
+      spans.push(...parseFormattedSpans(match[18], { ...currentStyle, italics: true }));
+    } else if (match[19]) {
       // Strike: ~~text~~
-      spans.push(...parseFormattedSpans(match[17], { ...currentStyle, strike: true }));
+      spans.push(...parseFormattedSpans(match[20], { ...currentStyle, strike: true }));
     }
 
     lastIdx = regex.lastIndex;
@@ -123,11 +130,11 @@ function parseFormattedSpans(text: string, currentStyle: Partial<StyledSpan> = {
 /**
  * Parses markdown inline styles into docx TextRun elements with exact formatting and colors.
  */
-function parseInlineMarkdown(rawText: string): TextRun[] {
-  const spans = parseFormattedSpans(rawText);
+function parseInlineMarkdown(rawText: string, extraStyle: Partial<StyledSpan> = {}): TextRun[] {
+  const spans = parseFormattedSpans(rawText, extraStyle);
   if (spans.length === 0) {
     const clean = cleanXmlString(rawText);
-    return clean ? [new TextRun({ text: clean })] : [];
+    return clean ? [new TextRun({ text: clean, ...extraStyle })] : [];
   }
   return spans.map(s => new TextRun({
     text: s.text,
@@ -155,7 +162,7 @@ function base64ToUint8Array(base64: string): Uint8Array {
 
 export async function createDocxBlob(content: string): Promise<Blob> {
   const sanitizedContent = cleanXmlString(content || "");
-  const lines = sanitizedContent.split('\n');
+  const lines = sanitizedContent.split(/\r?\n/);
   const children: (Paragraph | Table)[] = [];
 
   let inCodeBlock = false;
@@ -200,15 +207,7 @@ export async function createDocxBlob(content: string): Promise<Blob> {
               },
               children: [
                 new Paragraph({
-                  children: parseInlineMarkdown(cellText).map(run => {
-                    if (isHeader) {
-                      return new TextRun({
-                        text: (run as any).root?.[1]?.root?.[0] || cellText,
-                        bold: true,
-                      });
-                    }
-                    return run;
-                  }),
+                  children: parseInlineMarkdown(cellText, isHeader ? { bold: true } : {}),
                 }),
               ],
             });
@@ -415,14 +414,28 @@ export async function createDocxBlob(content: string): Promise<Blob> {
         heading: HeadingLevel.HEADING_5,
         children: parseInlineMarkdown(trimmed.substring(hashCount)),
       }));
+    } else if (/^[-*+]\s+\[([ xX])\]\s+/.test(trimmed)) {
+      // Task list item: - [x] or - [ ]
+      const isChecked = /^[-*+]\s+\[[xX]\]/.test(trimmed);
+      const taskText = trimmed.replace(/^[-*+]\s+\[([ xX])\]\s+/, '');
+      children.push(new Paragraph({
+        children: [
+          new TextRun({
+            text: isChecked ? "[✓] " : "[ ] ",
+            bold: true,
+            color: isChecked ? "10B981" : "64748B",
+          }),
+          ...parseInlineMarkdown(taskText),
+        ],
+      }));
     } else if (/^[-*+]\s+/.test(trimmed)) {
       // Bullet list items with indent calculation
       const leadingSpaces = rawLine.search(/\S|$/);
-      const indentLevel = Math.min(4, Math.floor(leadingSpaces / 2));
+      const indentLevel = Math.min(2, Math.floor(leadingSpaces / 2));
       const textAfterBullet = trimmed.replace(/^[-*+]\s+/, '');
       
       children.push(new Paragraph({
-        bullet: { level: indentLevel },
+        numbering: { reference: "standard-bullets", level: indentLevel },
         children: parseInlineMarkdown(textAfterBullet),
       }));
     } else if (/^\d+\.\s+/.test(trimmed)) {
@@ -430,7 +443,7 @@ export async function createDocxBlob(content: string): Promise<Blob> {
       const textAfterNumber = trimmed.replace(/^\d+\.\s+/, '');
       children.push(new Paragraph({
         children: [
-          new TextRun({ text: trimmed.match(/^\d+\.\s+/)?.[0] || "• ", bold: true }),
+          new TextRun({ text: trimmed.match(/^\d+\.\s+/)?.[0] || "1. ", bold: true }),
           ...parseInlineMarkdown(textAfterNumber),
         ],
       }));
@@ -452,6 +465,36 @@ export async function createDocxBlob(content: string): Promise<Blob> {
   flushTableBuffer();
 
   const doc = new Document({
+    numbering: {
+      config: [
+        {
+          reference: "standard-bullets",
+          levels: [
+            {
+              level: 0,
+              format: LevelFormat.BULLET,
+              text: "\u2022",
+              alignment: AlignmentType.LEFT,
+              style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+            },
+            {
+              level: 1,
+              format: LevelFormat.BULLET,
+              text: "\u25E6",
+              alignment: AlignmentType.LEFT,
+              style: { paragraph: { indent: { left: 1440, hanging: 360 } } },
+            },
+            {
+              level: 2,
+              format: LevelFormat.BULLET,
+              text: "\u25AA",
+              alignment: AlignmentType.LEFT,
+              style: { paragraph: { indent: { left: 2160, hanging: 360 } } },
+            },
+          ],
+        },
+      ],
+    },
     sections: [{
       properties: {
         page: {
@@ -473,23 +516,6 @@ export async function createDocxBlob(content: string): Promise<Blob> {
 export async function exportToDocx(filename: string, content: string): Promise<void> {
   const blob = await createDocxBlob(content);
   const cleanName = filename.replace(/\.[^/.]+$/, "");
-  const downloadName = `${cleanName}.docx`;
-  
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = downloadName;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  
-  // Safe asynchronous revocation - prevents browser from failing or truncating download
-  setTimeout(() => {
-    try {
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      // Ignore cleanup error
-    }
-  }, 60000);
+  const downloadName = `${cleanName || 'documento'}.docx`;
+  downloadBlob(blob, downloadName);
 }
-
