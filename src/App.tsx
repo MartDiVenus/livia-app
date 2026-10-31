@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Toolbar } from './components/Toolbar';
 import { VimEditor } from './components/VimEditor';
 import { GoogleDocsModal } from './components/GoogleDocsModal';
@@ -337,13 +337,6 @@ export default function App() {
   const [fileSessionId, setFileSessionId] = useState<number>(0);
   const [format, setFormat] = useState<FileFormat>('txt');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('dark');
-
-  useEffect(() => {
-    const info = getActivePosixInfoForFilename(filename);
-    setActivePosixPath(info ? info.posixPath : null);
-    const driveInfo = getActiveDriveInfoForFilename(filename);
-    setActiveDriveFileId(driveInfo ? driveInfo.fileId : null);
-  }, [filename]);
   const [activeMode, setActiveMode] = useState<VimMode>('normal');
   const [lang, setLangState] = useState<'it' | 'en'>(() => {
     if (typeof window !== 'undefined') {
@@ -575,6 +568,14 @@ export default function App() {
   const [driveToken, setDriveToken] = useState<string | null>(null);
   const [driveFiles, setDriveFiles] = useState<DriveFile[]>([]);
   const [activeDriveFileId, setActiveDriveFileId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const info = getActivePosixInfoForFilename(filename);
+    setActivePosixPath(info ? info.posixPath : null);
+    const driveInfo = getActiveDriveInfoForFilename(filename);
+    setActiveDriveFileId(driveInfo ? driveInfo.fileId : null);
+  }, [filename]);
+
   const [isLoadingDrive, setIsLoadingDrive] = useState<boolean>(false);
   const [driveSearch, setDriveSearch] = useState<string>('');
   const [currentDriveFolderId, setCurrentDriveFolderId] = useState<string>('root');

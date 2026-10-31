@@ -682,7 +682,7 @@ export async function saveToDrive(
   // Build payload blob: HTML for native Google Docs, binary OpenXML for .docx, UTF-8 for text/code/Markdown
   let contentBlob: Blob;
   if (isGoogleDoc) {
-    const htmlPayload = convertMarkdownToGoogleDocsHtml(content, filename);
+    const htmlPayload = convertMarkdownToGoogleDocsHtml(content);
     contentBlob = new Blob([new TextEncoder().encode(htmlPayload)], {
       type: 'text/html; charset=UTF-8',
     });

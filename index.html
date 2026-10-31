@@ -44,6 +44,21 @@
         }
         origError.apply(console, args);
       };
+
+      // Self-heal stale PWA Service Worker cache if a chunk fails to preload or if an uncaught startup error leaves #root empty
+      window.addEventListener('vite:preloadError', () => {
+        window.location.reload();
+      });
+
+      if ('serviceWorker' in navigator) {
+        let refreshing = false;
+        navigator.serviceWorker.addEventListener('controllerchange', () => {
+          if (!refreshing) {
+            refreshing = true;
+            window.location.reload();
+          }
+        });
+      }
     </script>
   </head>
 
