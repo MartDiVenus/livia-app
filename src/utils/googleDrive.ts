@@ -1,5 +1,6 @@
 import firebaseConfig from '../../firebase-applet-config.json';
-import { convertGoogleDocsHtmlToMarkdown } from './googleDocsHelper';
+import { convertGoogleDocsHtmlToMarkdown, convertMarkdownToGoogleDocsHtml } from './googleDocsHelper';
+import { FileFormat } from '../types';
 
 export interface User {
   displayName: string | null;
@@ -403,19 +404,289 @@ export async function readFromDrive(accessToken: string, fileId: string, mimeTyp
   return fixMojibake(rawText);
 }
 
+// --- Google Drive URL / File ID Resolution & Tracking ---
+
+export interface ActiveDriveFileInfo {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  rawInput: string;
+}
+
+export interface RecentDriveEntry {
+  fileId: string;
+  filename: string;
+  mimeType: string;
+  rawInput: string;
+  lastOpened: number;
+}
+
+const RECENT_DRIVE_REFS_KEY = 'livia_drive_recent_refs';
+const activeDriveFilesByFilename = new Map<string, ActiveDriveFileInfo>();
+const activeDriveFilesById = new Map<string, ActiveDriveFileInfo>();
+
+export function registerActiveDriveFile(info: ActiveDriveFileInfo): void {
+  if (!info.fileId || !info.filename) return;
+  activeDriveFilesByFilename.set(info.filename.toLowerCase(), info);
+  activeDriveFilesById.set(info.fileId, info);
+}
+
+export function getActiveDriveInfoForFilename(filename: string): ActiveDriveFileInfo | null {
+  if (!filename) return null;
+  return activeDriveFilesByFilename.get(filename.toLowerCase()) || null;
+}
+
+export function getActiveDriveInfoById(fileId: string): ActiveDriveFileInfo | null {
+  if (!fileId) return null;
+  return activeDriveFilesById.get(fileId) || null;
+}
+
+export function getRecentDriveRefs(): RecentDriveEntry[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(RECENT_DRIVE_REFS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addRecentDriveRef(entry: Omit<RecentDriveEntry, 'lastOpened'>): void {
+  if (typeof window === 'undefined' || !entry.fileId) return;
+  try {
+    const current = getRecentDriveRefs().filter(item => item.fileId !== entry.fileId);
+    const updated: RecentDriveEntry[] = [
+      { ...entry, lastOpened: Date.now() },
+      ...current,
+    ].slice(0, 15);
+    localStorage.setItem(RECENT_DRIVE_REFS_KEY, JSON.stringify(updated));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function removeRecentDriveRef(fileId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const updated = getRecentDriveRefs().filter(item => item.fileId !== fileId);
+    localStorage.setItem(RECENT_DRIVE_REFS_KEY, JSON.stringify(updated));
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Extracts a Google Drive / Google Docs File ID from:
+ * - Full URLs: https://drive.google.com/file/d/<ID>/view..., https://docs.google.com/document/d/<ID>/edit..., https://drive.google.com/open?id=<ID>
+ * - Explicit prefixes: gdrive:<ID_OR_URL>, drive:<ID_OR_URL>, gdoc:<ID_OR_URL>
+ * - Raw Google Drive File IDs (20-65 chars alphanumeric with - or _, no slashes or dots)
+ */
+export function extractDriveFileId(rawInput: string): string | null {
+  if (!rawInput) return null;
+  let cleaned = rawInput.replace(/^["']|["']$/g, '').trim();
+  if (!cleaned) return null;
+
+  let hadExplicitPrefix = false;
+  const prefixMatch = cleaned.match(/^(?:gdrive|drive|gdoc):(.*)$/i);
+  if (prefixMatch) {
+    hadExplicitPrefix = true;
+    cleaned = prefixMatch[1].trim();
+  }
+
+  if (!cleaned) return null;
+
+  // 1. Check if it's a Google Drive / Docs URL
+  if (/^https?:\/\//i.test(cleaned) || /^(?:drive|docs)\.google\.com\//i.test(cleaned)) {
+    const isGoogleDomain = /(?:drive|docs)\.google\.com/i.test(cleaned);
+    if (!isGoogleDomain && !hadExplicitPrefix) return null;
+
+    // Match /d/<ID> (e.g., /file/d/<ID>, /document/d/<ID>, /spreadsheets/d/<ID>, /presentation/d/<ID>)
+    const dMatch = cleaned.match(/\/d\/([a-zA-Z0-9_-]{15,80})/);
+    if (dMatch && dMatch[1]) return dMatch[1];
+
+    // Match ?id=<ID> or &id=<ID>
+    const idParamMatch = cleaned.match(/[?&]id=([a-zA-Z0-9_-]{15,80})/);
+    if (idParamMatch && idParamMatch[1]) return idParamMatch[1];
+
+    // Match /folders/<ID>
+    const folderMatch = cleaned.match(/\/folders\/([a-zA-Z0-9_-]{15,80})/);
+    if (folderMatch && folderMatch[1]) return folderMatch[1];
+
+    return null;
+  }
+
+  // Reject POSIX paths or filenames with extensions/slashes
+  if (cleaned.includes('/') || cleaned.includes('\\') || cleaned.includes('.') || cleaned.startsWith('~')) {
+    return null;
+  }
+
+  // 2. If explicit prefix (gdrive:<ID>), accept any valid ID token of length 12..80
+  if (hadExplicitPrefix && /^[a-zA-Z0-9_-]{12,80}$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  // 3. Raw Google Drive File ID heuristic (typically 25-44 chars, e.g. 1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms)
+  // Require length 20..65 and at least a mix of digits, uppercase+lowercase, or hyphen/underscore so plain words are not misclassified
+  if (/^[a-zA-Z0-9_-]{20,65}$/.test(cleaned)) {
+    const hasDigit = /\d/.test(cleaned);
+    const hasMixedCase = /[a-z]/.test(cleaned) && /[A-Z]/.test(cleaned);
+    const hasSpecial = /[-_]/.test(cleaned);
+    if ((hasDigit && hasMixedCase) || (hasDigit && hasSpecial) || (hasMixedCase && hasSpecial) || cleaned.length >= 28) {
+      return cleaned;
+    }
+  }
+
+  return null;
+}
+
+export function isDriveReferenceLike(rawInput: string): boolean {
+  return Boolean(extractDriveFileId(rawInput));
+}
+
+export function detectFormatFromDriveMeta(filename: string, mimeType?: string): FileFormat {
+  if (mimeType === 'application/vnd.google-apps.document') {
+    return 'md';
+  }
+  const ext = filename.includes('.') ? (filename.split('.').pop()?.toLowerCase() || 'txt') : 'txt';
+  const formatMap: Record<string, FileFormat> = {
+    txt: 'txt',
+    md: 'md',
+    markdown: 'md',
+    docx: 'docx',
+    json: 'json',
+    xml: 'xml',
+    py: 'py',
+    kt: 'kt',
+    js: 'js',
+    mjs: 'js',
+    ts: 'ts',
+    tsx: 'ts',
+    sh: 'bash',
+    bash: 'bash',
+    tex: 'tex',
+    java: 'java',
+    c: 'c',
+    cpp: 'cpp',
+    h: 'c',
+    hpp: 'cpp',
+    ly: 'ly',
+    lilypond: 'ly',
+    html: 'html',
+    htm: 'html',
+    css: 'css',
+    sql: 'sql',
+    rs: 'rs',
+    go: 'go',
+  };
+  return formatMap[ext] || 'txt';
+}
+
+export async function resolveAndReadDriveReference(
+  rawInput: string,
+  accessToken?: string | null
+): Promise<{
+  fileId: string;
+  filename: string;
+  content: string;
+  format: FileFormat;
+  mimeType: string;
+  rawInput: string;
+}> {
+  const fileId = extractDriveFileId(rawInput);
+  if (!fileId) {
+    throw new Error('URL o ID Google Drive non valido.');
+  }
+
+  const token = accessToken || getAccessToken();
+  if (!token) {
+    const err = new Error('Autenticazione Google Drive richiesta per aprire URL o ID Drive.');
+    (err as any).code = 'NO_DRIVE_AUTH';
+    throw err;
+  }
+
+  const metaRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}?fields=id,name,mimeType,modifiedTime,parents`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  if (metaRes.status === 401) {
+    const err = new Error('Sessione Google Drive scaduta. Effettua nuovamente l\'accesso.');
+    (err as any).code = 'NO_DRIVE_AUTH';
+    throw err;
+  }
+
+  if (!metaRes.ok) {
+    throw new Error(`File Google Drive non trovato o permessi insufficienti (ID: ${fileId}).`);
+  }
+
+  const meta = await metaRes.json();
+  if (meta.mimeType === 'application/vnd.google-apps.folder') {
+    throw new Error(`L'ID specificato (${meta.name || fileId}) corrisponde a una cartella Google Drive, non a un file.`);
+  }
+
+  const resolvedMime: string = meta.mimeType || 'text/plain';
+  let resolvedName: string = meta.name || `drive_${fileId.slice(0, 8)}.txt`;
+  if (
+    resolvedMime === 'application/vnd.google-apps.document' &&
+    !resolvedName.includes('.')
+  ) {
+    // Keep clean title for Google Docs
+    resolvedName = meta.name;
+  }
+
+  const content = await readFromDrive(token, fileId, resolvedMime, resolvedName);
+  const format = detectFormatFromDriveMeta(resolvedName, resolvedMime);
+
+  const info: ActiveDriveFileInfo = {
+    fileId,
+    filename: resolvedName,
+    mimeType: resolvedMime,
+    rawInput: rawInput.trim(),
+  };
+  registerActiveDriveFile(info);
+  addRecentDriveRef(info);
+
+  return {
+    fileId,
+    filename: resolvedName,
+    content,
+    format,
+    mimeType: resolvedMime,
+    rawInput: rawInput.trim(),
+  };
+}
+
 export async function saveToDrive(
   accessToken: string,
   filename: string,
   content: string,
   fileId?: string | null,
-  parentFolderId?: string | null
+  parentFolderId?: string | null,
+  targetMimeType?: string | null
 ): Promise<{ id: string; name: string }> {
-  const mimeType = getMimeTypeForFilename(filename);
+  const existingDriveInfo = fileId ? getActiveDriveInfoById(fileId) : getActiveDriveInfoForFilename(filename);
+  const isGoogleDoc =
+    targetMimeType === 'application/vnd.google-apps.document' ||
+    existingDriveInfo?.mimeType === 'application/vnd.google-apps.document';
+
+  const mimeType = isGoogleDoc
+    ? 'application/vnd.google-apps.document'
+    : getMimeTypeForFilename(filename);
+  const uploadContentType = isGoogleDoc ? 'text/html' : mimeType;
   const boundary = 'livia_drive_boundary_' + Date.now() + '_' + Math.random().toString(36).substring(2);
 
-  // For Microsoft Word DOCX files, build a genuine binary OpenXML .docx Blob
+  // Build payload blob: HTML for native Google Docs, binary OpenXML for .docx, UTF-8 for text/code/Markdown
   let contentBlob: Blob;
-  if (filename.toLowerCase().endsWith('.docx')) {
+  if (isGoogleDoc) {
+    const htmlPayload = convertMarkdownToGoogleDocsHtml(content, filename);
+    contentBlob = new Blob([new TextEncoder().encode(htmlPayload)], {
+      type: 'text/html; charset=UTF-8',
+    });
+  } else if (filename.toLowerCase().endsWith('.docx')) {
     try {
       const { createDocxBlob } = await import('./docxExport');
       contentBlob = await createDocxBlob(content);
@@ -433,8 +704,7 @@ export async function saveToDrive(
   }
 
   if (fileId) {
-    // 1. Update file with multipart PATCH so both the raw UTF-8 content AND the correct MIME type
-    // (e.g. text/markdown) are applied atomically to Google Drive.
+    // 1. Update file with multipart PATCH so both the content AND the MIME type are applied atomically
     const metadata = {
       name: filename,
       mimeType: mimeType,
@@ -445,7 +715,7 @@ export async function saveToDrive(
       'Content-Type: application/json; charset=UTF-8\r\n\r\n',
       JSON.stringify(metadata),
       `\r\n--${boundary}\r\n`,
-      `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n`,
+      `Content-Type: ${uploadContentType}; charset=UTF-8\r\n\r\n`,
       contentBlob,
       `\r\n--${boundary}--`,
     ], { type: `multipart/related; boundary=${boundary}` });
@@ -468,7 +738,7 @@ export async function saveToDrive(
         method: 'PATCH',
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Content-Type': `${mimeType}; charset=UTF-8`,
+          'Content-Type': `${uploadContentType}; charset=UTF-8`,
         },
         body: contentBlob,
       });
@@ -493,11 +763,29 @@ export async function saveToDrive(
         console.error('Errore saveToDrive metadata update fallback:', errText);
       }
 
+      const info: ActiveDriveFileInfo = {
+        fileId,
+        filename,
+        mimeType,
+        rawInput: existingDriveInfo?.rawInput || `gdrive:${fileId}`,
+      };
+      registerActiveDriveFile(info);
+      addRecentDriveRef(info);
       return { id: fileId, name: filename };
     }
 
     const data = await res.json();
-    return { id: data.id || fileId, name: data.name || filename };
+    const finalId = data.id || fileId;
+    const finalName = data.name || filename;
+    const info: ActiveDriveFileInfo = {
+      fileId: finalId,
+      filename: finalName,
+      mimeType,
+      rawInput: existingDriveInfo?.rawInput || `gdrive:${finalId}`,
+    };
+    registerActiveDriveFile(info);
+    addRecentDriveRef(info);
+    return { id: finalId, name: finalName };
   } else {
     // Create new file with metadata and binary content in a single multipart request
     const metadata: any = {
@@ -513,7 +801,7 @@ export async function saveToDrive(
       'Content-Type: application/json; charset=UTF-8\r\n\r\n',
       JSON.stringify(metadata),
       `\r\n--${boundary}\r\n`,
-      `Content-Type: ${mimeType}; charset=UTF-8\r\n\r\n`,
+      `Content-Type: ${uploadContentType}; charset=UTF-8\r\n\r\n`,
       contentBlob,
       `\r\n--${boundary}--`,
     ], { type: `multipart/related; boundary=${boundary}` });
@@ -534,6 +822,15 @@ export async function saveToDrive(
     }
 
     const data = await res.json();
+    const info: ActiveDriveFileInfo = {
+      fileId: data.id,
+      filename: data.name || filename,
+      mimeType,
+      rawInput: `gdrive:${data.id}`,
+    };
+    registerActiveDriveFile(info);
+    addRecentDriveRef(info);
     return { id: data.id, name: data.name };
   }
 }
+

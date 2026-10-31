@@ -5,7 +5,10 @@ export interface VimCommandsContext {
   lang: string;
   filename: string;
   content: string;
-  onSaveFileState: (filename: string, content: string) => void;
+  onSaveFileState: (filename: string, content: string) => void | Promise<void>;
+  onReadFileState?: (name: string) => string | null | Promise<string | null>;
+  onOpenFileState?: (targetName: string) => { found: boolean; name: string } | Promise<{ found: boolean; name: string }>;
+  onTearFileState?: (target: string) => { found: boolean; name: string; content?: string } | Promise<{ found: boolean; name: string; content?: string }>;
   onCloseFileState?: (force: boolean) => { message: string } | void;
   onShowHelp?: (cmd?: string) => void;
   onAiCommand?: (
@@ -19,6 +22,7 @@ export interface VimCommandsContext {
   showFlashMessage: (msg: string) => void;
   setShowLineNumbers?: (show: boolean) => void;
   onOpenAiAssistant?: () => void;
+  insertBelowCursor?: (text: string) => void;
 }
 
 export function registerVimCommands(ctx: VimCommandsContext) {
@@ -27,44 +31,79 @@ export function registerVimCommands(ctx: VimCommandsContext) {
     filename,
     content,
     onSaveFileState,
+    onReadFileState,
+    onOpenFileState,
+    onTearFileState,
     onCloseFileState,
     onShowHelp,
     onAiCommand,
     setLang,
     showFlashMessage,
     setShowLineNumbers,
-    onOpenAiAssistant
+    onOpenAiAssistant,
+    insertBelowCursor
   } = ctx;
 
   Vim.mapCommand('zc', 'action', 'fold', {}, {});
   Vim.mapCommand('zo', 'action', 'unfold', {}, {});
   
-  Vim.defineEx('write', 'w', () => {
-    onSaveFileState(filename, content);
-    showFlashMessage(lang === 'it' ? `"${filename}" salvato.` : `"${filename}" written.`);
+  Vim.defineEx('write', 'w', async (cm: any, params: any) => {
+    const rawTarget = params?.argString?.trim() || filename;
+    const currentText = cm?.getValue ? cm.getValue() : content;
+    await onSaveFileState(rawTarget, currentText);
+    showFlashMessage(lang === 'it' ? `"${rawTarget}" salvato.` : `"${rawTarget}" written.`);
   });
   
-  Vim.defineEx('edit', 'e', (cm: any, params: any) => {
-    const target = params?.args?.[0];
-    if (!target) {
-       showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
+  Vim.defineEx('edit', 'e', async (cm: any, params: any) => {
+    const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
+    if (!rawTarget) {
+       showFlashMessage(lang === 'it' ? 'Specificare un nome file o percorso POSIX (es. :e /percorso/file.md).' : 'Specify a filename or POSIX path (e.g. :e /path/to/file.md).');
+       return;
+    }
+    if (onOpenFileState) {
+       await onOpenFileState(rawTarget);
        return;
     }
     if (typeof window !== 'undefined') {
-       const saved = localStorage.getItem('livia_files');
-       if (saved) {
-          try {
-             const files = JSON.parse(saved);
-             if (files[target]) {
-                showFlashMessage(lang === 'it' ? `File "${target}" esiste già` : `File "${target}" already exists`);
-                return;
-             }
-          } catch (e) {}
-       }
        if (onSaveFileState) {
-          onSaveFileState(target, '');
-          showFlashMessage(lang === 'it' ? `Nuovo file "${target}"` : `New file "${target}"`);
+          await onSaveFileState(rawTarget, '');
+          showFlashMessage(lang === 'it' ? `Nuovo file "${rawTarget}"` : `New file "${rawTarget}"`);
        }
+    }
+  });
+
+  Vim.defineEx('read', 'r', async (cm: any, params: any) => {
+    const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
+    if (!rawTarget) {
+      showFlashMessage(
+        lang === 'it'
+          ? 'Specificare un file o percorso POSIX da inserire (es. :r /percorso/file.md).'
+          : 'Specify a file or POSIX path to read (e.g. :r /path/to/file.md).'
+      );
+      return;
+    }
+    if (onReadFileState) {
+      const readContent = await onReadFileState(rawTarget);
+      if (readContent !== null && readContent !== undefined) {
+        if (insertBelowCursor) {
+          insertBelowCursor(readContent);
+        } else if (cm?.replaceRange && cm?.getCursor) {
+          const cur = cm.getCursor();
+          const lineText = cm.getLine ? (cm.getLine(cur.line) || '') : '';
+          cm.replaceRange('\n' + readContent, { line: cur.line, ch: lineText.length });
+        }
+        showFlashMessage(
+          lang === 'it'
+            ? `Inserito contenuto da "${rawTarget}"`
+            : `Inserted content from "${rawTarget}"`
+        );
+      } else {
+        showFlashMessage(
+          lang === 'it'
+            ? `File "${rawTarget}" non trovato.`
+            : `File "${rawTarget}" not found.`
+        );
+      }
     }
   });
 
@@ -80,8 +119,10 @@ export function registerVimCommands(ctx: VimCommandsContext) {
     }
   });
 
-  Vim.defineEx('wq', 'wq', (cm: any, params: any) => {
-    onSaveFileState(filename, content);
+  Vim.defineEx('wq', 'wq', async (cm: any, params: any) => {
+    const rawTarget = params?.argString?.trim() || filename;
+    const currentText = cm?.getValue ? cm.getValue() : content;
+    await onSaveFileState(rawTarget, currentText);
     if (onCloseFileState) {
        const res = onCloseFileState(true); 
        if (res && res.message) {
@@ -170,9 +211,23 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   });
 
   Vim.defineEx('tear', 'tear', async (cm: any, params: any) => {
-    const target = params?.args?.[0];
-    if (!target) {
-       showFlashMessage(lang === 'it' ? 'Specificare un nome file.' : 'Specify a filename.');
+    const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
+    if (!rawTarget) {
+       showFlashMessage(lang === 'it' ? 'Specificare un nome file o percorso POSIX.' : 'Specify a filename or POSIX path.');
+       return;
+    }
+    if (onTearFileState) {
+       const res = await onTearFileState(rawTarget);
+       if (res.found && res.content !== undefined) {
+          try {
+             await navigator.clipboard.writeText(res.content);
+             showFlashMessage(lang === 'it' ? `Contenuto di "${res.name}" copiato negli appunti.` : `Content of "${res.name}" copied to clipboard.`);
+          } catch {
+             showFlashMessage(lang === 'it' ? 'Errore durante la copia negli appunti.' : 'Error copying to clipboard.');
+          }
+       } else {
+          showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
+       }
        return;
     }
     if (typeof window !== 'undefined') {
@@ -180,11 +235,10 @@ export function registerVimCommands(ctx: VimCommandsContext) {
        if (saved) {
           try {
              const files = JSON.parse(saved);
-             if (files[target] !== undefined) {
-                // Copy to clipboard
+             if (files[rawTarget] !== undefined) {
                 try {
-                   await navigator.clipboard.writeText(files[target]);
-                   showFlashMessage(lang === 'it' ? `Contenuto di "${target}" copiato.` : `Content of "${target}" copied.`);
+                   await navigator.clipboard.writeText(files[rawTarget]);
+                   showFlashMessage(lang === 'it' ? `Contenuto di "${rawTarget}" copiato.` : `Content of "${rawTarget}" copied.`);
                 } catch (e) {
                    showFlashMessage(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.');
                 }
@@ -192,7 +246,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
              }
           } catch (e) {}
        }
-       showFlashMessage(lang === 'it' ? `File "${target}" non trovato.` : `File "${target}" not found.`);
+       showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
     }
   });
 

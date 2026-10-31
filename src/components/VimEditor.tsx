@@ -48,10 +48,10 @@ interface VimEditorProps {
   setEditorFontSize?: (val: number) => void;
   syntaxHighlightOn: boolean;
   setSyntaxHighlightOn?: (val: boolean) => void;
-  onSaveFileState: (name: string, content: string) => void;
-  onReadFileState: (name: string) => string | null;
-  onOpenFileState?: (targetName: string) => { found: boolean; name: string };
-  onTearFileState?: (target: string) => { found: boolean; name: string; content?: string };
+  onSaveFileState: (name: string, content: string) => void | Promise<void>;
+  onReadFileState: (name: string) => string | null | Promise<string | null>;
+  onOpenFileState?: (targetName: string) => { found: boolean; name: string } | Promise<{ found: boolean; name: string }>;
+  onTearFileState?: (target: string) => { found: boolean; name: string; content?: string } | Promise<{ found: boolean; name: string; content?: string }>;
   onCloseFileState?: (force: boolean) => { success: boolean; message: string; isEmptyHistory?: boolean };
   onShowHelp?: (topic?: string) => void;
   onAiCommand?: (action: 'prompt' | 'translate' | 'latin', arg: string, textToProcess: string, isSelection: boolean, onInsert: (newText: string, isUpdate?: boolean) => void) => Promise<void>;
@@ -60,6 +60,7 @@ interface VimEditorProps {
   onOpenGoogleDocsModal?: () => void;
   onOpenSettingsModal?: () => void;
   onModeChange?: (mode: VimMode) => void;
+  onCursorChange?: (line: number, col: number) => void;
   isSoftKeyboardOpen?: boolean;
   onSoftKeyboardChange?: (isOpen: boolean) => void;
   aiProfiles?: AiProfile[];
@@ -96,6 +97,7 @@ export function VimEditor({
   onOpenGoogleDocsModal,
   onOpenSettingsModal,
   onModeChange,
+  onCursorChange,
   isSoftKeyboardOpen,
   onSoftKeyboardChange,
   aiProfiles,
@@ -104,17 +106,26 @@ export function VimEditor({
   onOpenAiProfilesModal
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const onCursorChangeRef = useRef(onCursorChange);
+  useEffect(() => {
+    onCursorChangeRef.current = onCursorChange;
+  }, [onCursorChange]);
 
-  // Added logic to listen for custom events from TOC
+  // Listen for custom jump events from Sidebar Outline and TableOfContents
   useEffect(() => {
     const handleGotoLine = (e: CustomEvent<{ line: number }>) => {
       if (editorRef.current?.view) {
         const view = editorRef.current.view;
-        const linePos = view.state.doc.line(Math.min(e.detail.line, view.state.doc.lines)).from;
+        const targetLineNum = Math.max(1, Math.min(e.detail.line, view.state.doc.lines));
+        const lineObj = view.state.doc.line(targetLineNum);
+        const linePos = lineObj.from;
         view.dispatch({
-          selection: { anchor: linePos },
+          selection: { anchor: linePos, head: linePos },
           effects: EditorView.scrollIntoView(linePos, { y: 'center' })
         });
+        setCursorPos({ line: targetLineNum, col: 1 });
+        onCursorChangeRef.current?.(targetLineNum, 1);
+        view.contentDOM.focus();
       }
     };
     window.addEventListener('livia-goto-line', handleGotoLine as EventListener);
@@ -122,6 +133,41 @@ export function VimEditor({
       window.removeEventListener('livia-goto-line', handleGotoLine as EventListener);
     };
   }, []);
+
+  const insertBelowCursor = useCallback((textToInsert: string) => {
+    if (!editorRef.current?.view) return;
+    const view = editorRef.current.view;
+    const head = view.state.selection.main.head;
+    const lineObj = view.state.doc.lineAt(head);
+    const prefix = view.state.doc.length > 0 ? '\n' : '';
+    const insertStr = prefix + textToInsert;
+    const insertPos = lineObj.to;
+    (window as any).isVimHandling = true;
+    try {
+      view.dispatch({
+        changes: { from: insertPos, to: insertPos, insert: insertStr },
+        selection: { anchor: insertPos + (prefix ? 1 : 0), head: insertPos + (prefix ? 1 : 0) },
+        effects: EditorView.scrollIntoView(insertPos + (prefix ? 1 : 0), { y: 'center' })
+      });
+    } finally {
+      (window as any).isVimHandling = false;
+    }
+    const updatedDoc = view.state.doc.toString();
+    setContentRef.current?.(updatedDoc);
+    view.contentDOM.focus();
+  }, []);
+
+  useEffect(() => {
+    const handleInsertBelow = (e: CustomEvent<{ text: string }>) => {
+      if (typeof e.detail?.text === 'string') {
+        insertBelowCursor(e.detail.text);
+      }
+    };
+    window.addEventListener('livia-insert-below-cursor', handleInsertBelow as EventListener);
+    return () => {
+      window.removeEventListener('livia-insert-below-cursor', handleInsertBelow as EventListener);
+    };
+  }, [insertBelowCursor]);
   const proxyInputRef = useRef<HTMLTextAreaElement>(null);
   const isInsertModeRef = useRef(false);
   const setContentRef = useRef(setContent);
@@ -365,6 +411,47 @@ export function VimEditor({
   };
   const [isTouchDevice, setIsTouchDevice] = useState(false);
 
+  const scrollCursorAboveKeyboard = useCallback((view?: EditorView | null) => {
+    const activeView = view || editorRef.current?.view;
+    if (!activeView) return;
+
+    try {
+      activeView.requestMeasure();
+      const head = activeView.state.selection.main.head;
+      const safetyMargin = isTouchDeviceRef.current ? 68 : 28;
+
+      activeView.dispatch({
+        effects: EditorView.scrollIntoView(head, { y: 'nearest', yMargin: safetyMargin })
+      });
+
+      // Fallback direct geometric check on .cm-scroller to guarantee cursor stays above virtual keyboard
+      requestAnimationFrame(() => {
+        if (!activeView.scrollDOM) return;
+        const coords = activeView.coordsAtPos(head);
+        if (!coords) return;
+
+        const scrollerRect = activeView.scrollDOM.getBoundingClientRect();
+        const vvBottom = typeof window !== 'undefined' && window.visualViewport
+          ? window.visualViewport.offsetTop + window.visualViewport.height
+          : (typeof window !== 'undefined' ? window.innerHeight : scrollerRect.bottom);
+
+        const effectiveBottom = Math.min(scrollerRect.bottom, vvBottom);
+        const maxAllowedCursorBottom = effectiveBottom - safetyMargin;
+        const minAllowedCursorTop = scrollerRect.top + 24;
+
+        if (coords.bottom > maxAllowedCursorBottom) {
+          const delta = coords.bottom - maxAllowedCursorBottom;
+          activeView.scrollDOM.scrollTop += delta;
+        } else if (coords.top < minAllowedCursorTop) {
+          const delta = minAllowedCursorTop - coords.top;
+          activeView.scrollDOM.scrollTop = Math.max(0, activeView.scrollDOM.scrollTop - delta);
+        }
+      });
+    } catch {
+      // Ignore transient measurement errors during layout transitions
+    }
+  }, []);
+
   useEffect(() => {
     const isTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0) || /Mobi|Android|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent || '');
     setIsTouchDevice(isTouch);
@@ -378,7 +465,30 @@ export function VimEditor({
         }
       });
     }
-  }, []);
+
+    // Keep cursor visible above keyboard whenever the mobile visualViewport shrinks/resizes
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!vv) return;
+
+    let timeout1: ReturnType<typeof setTimeout> | null = null;
+    let timeout2: ReturnType<typeof setTimeout> | null = null;
+
+    const handleViewportResize = () => {
+      if (!editorRef.current?.view) return;
+      scrollCursorAboveKeyboard(editorRef.current.view);
+      if (timeout1) clearTimeout(timeout1);
+      if (timeout2) clearTimeout(timeout2);
+      timeout1 = setTimeout(() => scrollCursorAboveKeyboard(editorRef.current?.view), 80);
+      timeout2 = setTimeout(() => scrollCursorAboveKeyboard(editorRef.current?.view), 220);
+    };
+
+    vv.addEventListener('resize', handleViewportResize);
+    return () => {
+      vv.removeEventListener('resize', handleViewportResize);
+      if (timeout1) clearTimeout(timeout1);
+      if (timeout2) clearTimeout(timeout2);
+    };
+  }, [scrollCursorAboveKeyboard]);
 
   const vimModesList: { key: VimMode; label: string; shortcut: string; descIt: string; descEn: string }[] = [
     { key: 'normal', label: 'NORMAL', shortcut: 'Esc', descIt: 'Comandi e movimenti Vim', descEn: 'Vim navigation & commands' },
@@ -559,10 +669,12 @@ export function VimEditor({
           const dt = Date.now() - touchStartRef.current.time;
           touchStartRef.current = null;
 
-          // Check if there is already an active non-collapsed text selection range
+          // Check if there is already an active non-collapsed text selection range or active Vim visual mode
+          const cm = getCM(view);
+          const isVimVisual = Boolean((cm as any)?.state?.vim?.visualMode);
           const sel = view.state.selection.main;
           const domSel = window.getSelection ? window.getSelection() : null;
-          const hasActiveRange = (!sel.empty) || (domSel && !domSel.isCollapsed && domSel.toString().length > 0);
+          const hasActiveRange = isVimVisual || (!sel.empty) || (domSel && !domSel.isCollapsed && domSel.toString().length > 0);
 
           // Quick tap detection (< 12px drag, < 350ms duration)
           // Preserves native Android drag handles and selection extension gestures!
@@ -571,44 +683,64 @@ export function VimEditor({
             if (pos !== null) {
               view.dispatch({
                 selection: { anchor: pos, head: pos },
-                scrollIntoView: false
+                scrollIntoView: true
               });
               if (!view.hasFocus) {
                 view.contentDOM.focus();
               }
+              setTimeout(() => scrollCursorAboveKeyboard(view), 60);
+              setTimeout(() => scrollCursorAboveKeyboard(view), 200);
+              setTimeout(() => scrollCursorAboveKeyboard(view), 380);
             }
           }
         }
         return false;
       },
       keydown(event, view) {
-        if (!isTouchDeviceRef.current) return;
-        lastKeydownRef.current = { key: event.key, time: Date.now() };
-        
+        if (!isTouchDeviceRef.current) return false;
+
+        // Ignore pure modifier or IME composition keys so pressing Shift (for V, $, G)
+        // never calls Vim.handleKey('Shift') and never clears numeric prefixes like 55G
+        const ignoredKeys = new Set([
+          'Shift', 'Control', 'Alt', 'Meta', 'CapsLock', 'AltGraph',
+          'Dead', 'Unidentified', 'Process', 'Compose', 'Fn', 'NumLock', 'ScrollLock'
+        ]);
+        if (!event.key || ignoredKeys.has(event.key)) {
+          return false;
+        }
+
         if (!isInsertModeRef.current) {
-          // Attempt to aggressively intercept the keydown and process it via Vim
-          // This prevents Gboard composition if the browser respects preventDefault on keydown
-          if (event.key && event.key !== 'Unidentified' && event.key !== 'Process') {
+          const cm = getCM(view);
+          if (cm && Vim) {
+            const vimKey = (Vim as any).vimKeyFromEvent
+              ? (Vim as any).vimKeyFromEvent(event, (cm as any).state?.vim)
+              : event.key;
+            if (!vimKey) return false;
+
+            lastKeydownRef.current = { key: vimKey, time: Date.now() };
             event.preventDefault();
-            const cm = getCM(view);
-            if (cm && Vim) {
-              (window as any).isVimHandling = true;
-              Vim.handleKey(cm, event.key, 'mapping');
+            (window as any).isVimHandling = true;
+            try {
+              Vim.handleKey(cm, vimKey, 'mapping');
+            } finally {
               (window as any).isVimHandling = false;
             }
             return true;
           }
+        } else {
+          lastKeydownRef.current = { key: event.key, time: Date.now() };
         }
+        return false;
       },
       beforeinput(event, view) {
-        if (!isTouchDeviceRef.current) return;
+        if (!isTouchDeviceRef.current) return false;
 
         if (!isInsertModeRef.current) {
           const timeSinceKeydown = Date.now() - lastKeydownRef.current.time;
           const wasRealKey = lastKeydownRef.current.key !== 'Unidentified' && lastKeydownRef.current.key !== 'Process' && lastKeydownRef.current.key !== '';
           
           if (timeSinceKeydown < 100 && wasRealKey) {
-            // Key was typed on a physical keyboard attached to mobile
+            // Key was already handled by keydown above
             event.preventDefault();
             return true;
           }
@@ -618,16 +750,19 @@ export function VimEditor({
           const cm = getCM(view);
           if (cm && Vim) {
             (window as any).isVimHandling = true;
-            if (event.data) {
-              for (const c of event.data) {
-                Vim.handleKey(cm, c, 'mapping');
+            try {
+              if (event.data) {
+                for (const c of event.data) {
+                  Vim.handleKey(cm, c, 'mapping');
+                }
+              } else if (event.inputType === 'deleteContentBackward') {
+                Vim.handleKey(cm, '<Backspace>', 'mapping');
+              } else if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
+                Vim.handleKey(cm, '<Enter>', 'mapping');
               }
-            } else if (event.inputType === 'deleteContentBackward') {
-              Vim.handleKey(cm, '<Backspace>', 'mapping');
-            } else if (event.inputType === 'insertLineBreak' || event.inputType === 'insertParagraph') {
-              Vim.handleKey(cm, '<Enter>', 'mapping');
+            } finally {
+              (window as any).isVimHandling = false;
             }
-            (window as any).isVimHandling = false;
           }
           return true;
         }
@@ -658,20 +793,27 @@ export function VimEditor({
 
 
 
+    EditorView.scrollMargins.of(() => ({
+      top: 28,
+      bottom: isTouchDeviceRef.current ? 72 : 28
+    })),
+
     EditorView.theme({
       "&": {
         fontFamily: 'var(--font-mono)'
       },
       ".cm-content": {
         fontFamily: 'var(--font-mono)',
-        letterSpacing: '0px'
+        letterSpacing: '0px',
+        paddingBottom: '45vh'
       },
       ".cm-line": {
         fontFamily: 'var(--font-mono)',
         letterSpacing: '0px'
       },
       ".cm-scroller": {
-        fontFamily: 'var(--font-mono)'
+        fontFamily: 'var(--font-mono)',
+        overscrollBehavior: 'contain'
       },
       ".cm-tooltip": {
         fontFamily: 'var(--font-mono)'
@@ -682,7 +824,15 @@ export function VimEditor({
       if (update.selectionSet || update.docChanged) {
         const head = update.state.selection.main.head;
         const line = update.state.doc.lineAt(head);
-        setCursorPos({ line: line.number, col: head - line.from + 1 });
+        const col = head - line.from + 1;
+        setCursorPos({ line: line.number, col });
+        onCursorChangeRef.current?.(line.number, col);
+
+        if (isTouchDeviceRef.current || (typeof window !== 'undefined' && window.innerWidth < 1024)) {
+          requestAnimationFrame(() => {
+            scrollCursorAboveKeyboard(update.view);
+          });
+        }
       }
     }),
 
@@ -775,15 +925,52 @@ export function VimEditor({
     
     // Monkey-patch findKey to allow `ng` instead of `ngg` (jump to line n)
     // We only do this once to avoid infinite wrapping.
-    // Removed old Vim.map for arrow keys as they don't work reliably
-    // Map G in visual mode to select to the very end of the last line
-    // Map G in visual mode to select to the very end of the last line
-    Vim.defineMotion("gotoEndFull", (cm, head, motionArgs) => {
-      const lastLine = cm.lineCount() - 1;
-      const lastCh = cm.getLine(lastLine).length;
-      return { line: lastLine, ch: lastCh };
+    // Map G in visual mode to support both <count>G (e.g. 55G) and plain G (to end of file),
+    // selecting the full target line in both V (visual-line) and v / v$ (character-wise visual) modes.
+    Vim.defineMotion("gotoEndFull", (cm: any, head: any, motionArgs: any, vim: any) => {
+      const firstLine = cm.firstLine ? cm.firstLine() : 0;
+      const lastLine = cm.lastLine ? cm.lastLine() : cm.lineCount() - 1;
+      const firstLineNum = cm.getOption ? (cm.getOption('firstLineNumber') || 1) : 1;
+
+      const hasExplicitRepeat = Boolean(motionArgs?.repeatIsExplicit);
+      const targetLine = hasExplicitRepeat
+        ? Math.max(firstLine, Math.min(lastLine, (motionArgs.repeat || 1) - firstLineNum))
+        : lastLine;
+
+      const anchor = vim?.sel?.anchor || head;
+      const isForward = targetLine >= anchor.line;
+      const targetLineLen = cm.getLine(targetLine)?.length ?? 0;
+
+      if (vim?.visualLine) {
+        return { line: targetLine, ch: isForward ? targetLineLen : 0 };
+      }
+
+      const anchorLineLen = cm.getLine(anchor.line)?.length ?? 0;
+      const headAtAnchorLineEnd =
+        head.line === anchor.line &&
+        anchorLineLen > 0 &&
+        head.ch >= Math.max(0, anchorLineLen - 1);
+
+      if (isForward) {
+        const newAnchor = headAtAnchorLineEnd ? { line: anchor.line, ch: 0 } : anchor;
+        const newHead = { line: targetLine, ch: targetLineLen };
+        return [newAnchor, newHead];
+      } else {
+        const newAnchor = headAtAnchorLineEnd ? { line: anchor.line, ch: anchorLineLen } : anchor;
+        const newHead = { line: targetLine, ch: 0 };
+        return [newAnchor, newHead];
+      }
     });
-    Vim.mapCommand("G", "motion", "gotoEndFull", {}, { context: "visual" });
+    if (!(Vim as any)._liviaGotoEndFullMapped) {
+      Vim.mapCommand(
+        "G",
+        "motion",
+        "gotoEndFull",
+        { forward: true, explicitRepeat: true, linewise: true },
+        { context: "visual" }
+      );
+      (Vim as any)._liviaGotoEndFullMapped = true;
+    }
     if (!(Vim as any)._liviaFindKeyPatched) {
       const origFindKey = Vim.findKey;
       Vim.findKey = function(cm_: any, key: string, origin: string) {
@@ -813,15 +1000,19 @@ export function VimEditor({
       filename,
       content,
       onSaveFileState,
+      onReadFileState,
+      onOpenFileState,
+      onTearFileState,
       onCloseFileState,
       onShowHelp,
       onAiCommand,
       setLang,
       showFlashMessage,
       setShowLineNumbers,
-      onOpenAiAssistant: handleOpenAiModal
+      onOpenAiAssistant: handleOpenAiModal,
+      insertBelowCursor
     });
-  }, [filename, content, lang, onSaveFileState, onShowHelp, onAiCommand, setShowLineNumbers, handleOpenAiModal]);
+  }, [filename, content, lang, onSaveFileState, onReadFileState, onOpenFileState, onTearFileState, onCloseFileState, onShowHelp, onAiCommand, setShowLineNumbers, handleOpenAiModal, insertBelowCursor]);
 
 
 
@@ -1433,6 +1624,7 @@ export function VimEditor({
                       <TableOfContents 
                    content={content}
                    lang={lang}
+                   activeLine={cursorPos.line}
                    onNavigate={(line) => {
                      window.dispatchEvent(new CustomEvent('livia-goto-line', { detail: { line } }));
                    }}
@@ -1540,8 +1732,19 @@ export function VimEditor({
                         }
                      }
                    } else {
-                     Vim.handleKey(cm, key, 'mapping');
-                     if (key === 'n' || key === 'N') {
+                     (window as any).isVimHandling = true;
+                     try {
+                       if (key.length > 1 && !key.startsWith('<')) {
+                         for (const ch of key) {
+                           Vim.handleKey(cm, ch, 'mapping');
+                         }
+                       } else {
+                         Vim.handleKey(cm, key, 'mapping');
+                       }
+                     } finally {
+                       (window as any).isVimHandling = false;
+                     }
+                     if (key === 'n' || key === 'N' || key === 'G' || key === 'gg') {
                        const scrollMatch = () => {
                          if (editorRef.current?.view) {
                            const v = editorRef.current.view;
@@ -1573,6 +1776,27 @@ export function VimEditor({
                    changes: { from: pos, to: pos, insert: text },
                    selection: { anchor: pos + text.length + (offsetStr ? parseInt(offsetStr) : 0) }
                 });
+             }
+          }}
+        />
+        <button
+          id="simulated-jump-trigger"
+          onClick={(e) => {
+             const lineStr = e.currentTarget.getAttribute('data-line');
+             if (lineStr !== null && editorRef.current?.view) {
+                const view = editorRef.current.view;
+                const parsed0Based = parseInt(lineStr, 10);
+                if (!isNaN(parsed0Based)) {
+                  const targetLineNum = Math.max(1, Math.min(parsed0Based + 1, view.state.doc.lines));
+                  const linePos = view.state.doc.line(targetLineNum).from;
+                  view.dispatch({
+                    selection: { anchor: linePos, head: linePos },
+                    effects: EditorView.scrollIntoView(linePos, { y: 'center' })
+                  });
+                  setCursorPos({ line: targetLineNum, col: 1 });
+                  onCursorChangeRef.current?.(targetLineNum, 1);
+                  view.contentDOM.focus();
+                }
              }
           }}
         />

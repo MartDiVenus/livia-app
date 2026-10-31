@@ -35,7 +35,8 @@ import {
   Settings,
   Copy,
   Sparkles,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Terminal
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { FileFormat, FileData, TEMPLATES, getTemplates } from '../types';
@@ -78,6 +79,8 @@ interface ToolbarProps {
   isHeaderCollapsed?: boolean;
   setIsHeaderCollapsed?: (val: boolean | ((prev: boolean) => boolean)) => void;
   onOpenAiAssistant?: () => void;
+  onOpenPosixModal?: () => void;
+  activePosixPath?: string | null;
 }
 
 export function Toolbar({
@@ -115,7 +118,9 @@ export function Toolbar({
   onOpenGuide,
   isHeaderCollapsed = false,
   setIsHeaderCollapsed,
-  onOpenAiAssistant
+  onOpenAiAssistant,
+  onOpenPosixModal,
+  activePosixPath
 }: ToolbarProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [importMenuOpen, setImportMenuOpen] = useState<boolean>(false);
@@ -357,6 +362,21 @@ export function Toolbar({
 
           {/* Quick Collapse & Settings Buttons on Mobile Row 1 */}
           <div className="flex items-center gap-1 md:hidden shrink-0">
+            {onOpenPosixModal && (
+              <button
+                type="button"
+                onClick={onOpenPosixModal}
+                className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
+                  activePosixPath
+                    ? 'border-emerald-500/60 bg-emerald-950/40 text-emerald-400'
+                    : 'border-gray-200 dark:border-[#2D2D2D] bg-gray-100 dark:bg-[#16181D] text-emerald-600 dark:text-emerald-400'
+                }`}
+                title={lang === 'it' ? 'Apri da Percorso POSIX (:e /path)' : 'Open via POSIX Path (:e /path)'}
+                id="mobile-posix-path-btn"
+              >
+                <Terminal size={15} />
+              </button>
+            )}
             {onOpenAiAssistant && (
               <button
                 type="button"
@@ -479,6 +499,31 @@ export function Toolbar({
               className="hidden"
             />
 
+            {/* Quick Direct POSIX Path / Drive ID Button */}
+            {onOpenPosixModal && (
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onOpenPosixModal();
+                }}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-bold shadow-xs active:scale-95 transition-all cursor-pointer ${
+                  activePosixPath
+                    ? 'border-emerald-500/60 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+                    : 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/25 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400'
+                }`}
+                title={
+                  activePosixPath
+                    ? (lang === 'it' ? `Collegato a POSIX: ${activePosixPath} (Clicca per aprire altri percorsi o ID Drive)` : `Linked to POSIX: ${activePosixPath}`)
+                    : (lang === 'it' ? 'Apri o incolla Percorso POSIX o URL/ID Google Drive (:e /percorso o gdrive:ID)' : 'Open or paste POSIX Path or Google Drive URL/ID (:e /path or gdrive:ID)')
+                }
+                id="open-posix-modal-btn"
+              >
+                <Terminal size={14} className="text-emerald-600 dark:text-emerald-400" />
+                <span className="font-mono">POSIX / ID</span>
+              </button>
+            )}
+
             {/* IMPORT MENU Dropdown */}
             <div className="relative" ref={importMenuRef}>
               <button
@@ -497,6 +542,26 @@ export function Toolbar({
 
               {importMenuOpen && (
                 <div className="absolute left-0 mt-1.5 w-64 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-xl shadow-xl z-50 p-2 flex flex-col gap-1 font-sans text-xs animate-fadeIn">
+                  {onOpenPosixModal && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setImportMenuOpen(false);
+                        setMobileMenuOpen(false);
+                        onOpenPosixModal();
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg text-left text-gray-800 dark:text-zinc-200 cursor-pointer font-bold"
+                    >
+                      <Terminal size={16} className="text-emerald-500 shrink-0" />
+                      <div className="flex flex-col">
+                        <span className="font-bold">{lang === 'it' ? 'Percorso POSIX / ID Drive (:e)' : 'POSIX Path / Drive ID (:e)'}</span>
+                        <span className="text-[11px] text-gray-400 dark:text-zinc-400 font-normal">
+                          {lang === 'it' ? 'Incolla percorso POSIX o URL/ID Google Drive' : 'Paste POSIX path or Google Drive URL/ID'}
+                        </span>
+                      </div>
+                    </button>
+                  )}
+
                   <button
                     type="button"
                     onClick={() => {

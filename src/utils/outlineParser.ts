@@ -111,7 +111,7 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
     // --- JAVASCRIPT & TYPESCRIPT ---
     else if (format === 'js' || format === 'ts') {
       // Classes
-      const classMatch = trimmed.match(/^(?:export\s+)?class\s+([a-zA-Z0-9_]+)/);
+      const classMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([a-zA-Z0-9_$]+)/);
       if (classMatch) {
         elements.push({
           id,
@@ -122,33 +122,63 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
         });
         continue;
       }
-      // Interfaces / Types
-      const interfaceMatch = trimmed.match(/^(?:export\s+)?(?:interface|type)\s+([a-zA-Z0-9_]+)/);
+      // Interfaces / Types / Enums
+      const interfaceMatch = trimmed.match(/^(?:export\s+)?(interface|type|enum)\s+([a-zA-Z0-9_$]+)/);
       if (interfaceMatch) {
         elements.push({
           id,
-          label: `interface ${interfaceMatch[1]}`,
+          label: `${interfaceMatch[1]} ${interfaceMatch[2]}`,
           type: 'class',
           line: i,
           indent
         });
         continue;
       }
-      // Functions
-      const funcMatch = trimmed.match(/^(?:export\s+)?(?:async\s+)?function\s+([a-zA-Z0-9_]+)/);
+      // Standard Functions
+      const funcMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([a-zA-Z0-9_$]+)/);
       if (funcMatch) {
         elements.push({
           id,
           label: `function ${funcMatch[1]}()`,
-          type: 'function',
+          type: indent > 0 ? 'method' : 'function',
+          line: i,
+          indent
+        });
+        continue;
+      }
+      // Arrow functions & function expressions assigned to const/let/var
+      const arrowOrExprMatch =
+        trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*(?::[^=]+)?=>/) ||
+        trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*(?::[^=]+)?=\s*(?:async\s+)?function\b/) ||
+        trimmed.match(/^(?:export\s+)?(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:React\.)?(?:memo|forwardRef|useCallback)\s*\(/);
+      if (arrowOrExprMatch) {
+        elements.push({
+          id,
+          label: `${arrowOrExprMatch[1]}()`,
+          type: indent > 0 ? 'method' : 'function',
+          line: i,
+          indent
+        });
+        continue;
+      }
+      // Object property function / method: name: function(...) or name: (...) =>
+      const objMethodMatch = trimmed.match(/^([a-zA-Z0-9_$]+)\s*:\s*(?:async\s*)?(?:function\b|\([^)]*\)\s*=>)/);
+      if (objMethodMatch) {
+        elements.push({
+          id,
+          label: `${objMethodMatch[1]}()`,
+          type: 'method',
           line: i,
           indent
         });
         continue;
       }
       // Methods inside classes/objects
-      const methodMatch = trimmed.match(/^(?:public|private|protected|static|async|get|set)?\s*([a-zA-Z0-9_]+)\s*\(.*?\)\s*[:{]/);
-      if (methodMatch && !['if', 'for', 'while', 'switch', 'catch'].includes(methodMatch[1])) {
+      const methodMatch = trimmed.match(/^(?:public|private|protected|readonly|static|override|async|get|set|\*|\s)*([a-zA-Z0-9_$]+)\s*\([^;]*\)\s*(?::\s*[^{;]+)?\{/);
+      if (
+        methodMatch &&
+        !['if', 'for', 'while', 'switch', 'catch', 'function', 'return', 'sizeof', 'typeof'].includes(methodMatch[1])
+      ) {
         elements.push({
           id,
           label: `${methodMatch[1]}()`,
@@ -159,7 +189,40 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
         continue;
       }
       // Loops
-      if ((trimmed.startsWith('for') || trimmed.startsWith('while')) && trimmed.includes('(')) {
+      if ((trimmed.startsWith('for ') || trimmed.startsWith('for(') || trimmed.startsWith('while ') || trimmed.startsWith('while(')) && trimmed.includes('(')) {
+        elements.push({ id, label: trimmed.split('{')[0].trim(), type: 'loop', line: i, indent });
+        continue;
+      }
+    }
+
+    // --- JAVA / C / C++ / RUST / GO ---
+    else if (format === 'java' || format === 'c' || format === 'cpp' || format === 'rs' || format === 'go') {
+      const typeMatch = trimmed.match(/^(?:pub\s+|public\s+|private\s+|protected\s+|abstract\s+|final\s+)*(class|struct|interface|enum|trait|impl)\s+([a-zA-Z0-9_<>:]+)/);
+      if (typeMatch) {
+        elements.push({
+          id,
+          label: `${typeMatch[1]} ${typeMatch[2]}`,
+          type: 'class',
+          line: i,
+          indent
+        });
+        continue;
+      }
+      const fnMatch =
+        trimmed.match(/^(?:pub\s+|async\s+|unsafe\s+)*fn\s+([a-zA-Z0-9_]+)/) ||
+        trimmed.match(/^func\s+(?:\([^)]+\)\s*)?([a-zA-Z0-9_]+)/) ||
+        trimmed.match(/^(?:(?:public|private|protected|static|final|synchronized|virtual|inline|constexpr|explicit)\s+)*(?:[a-zA-Z0-9_<>:*&]+\s+)+([a-zA-Z0-9_~]+)\s*\([^;]*\)\s*(?:const\s*)?(?:throws\s+[^{]+)?\{/);
+      if (fnMatch && !['if', 'for', 'while', 'switch', 'catch'].includes(fnMatch[1])) {
+        elements.push({
+          id,
+          label: `${fnMatch[1]}()`,
+          type: indent > 0 ? 'method' : 'function',
+          line: i,
+          indent
+        });
+        continue;
+      }
+      if ((trimmed.startsWith('for ') || trimmed.startsWith('for(') || trimmed.startsWith('while ') || trimmed.startsWith('while('))) {
         elements.push({ id, label: trimmed.split('{')[0].trim(), type: 'loop', line: i, indent });
         continue;
       }
@@ -232,8 +295,8 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
       }
     }
 
-    // --- MARKDOWN ---
-    else if (format === 'md') {
+    // --- MARKDOWN & DOCX ---
+    else if (format === 'md' || format === 'docx') {
       const headingMatch = trimmed.match(/^(#{1,6})\s+(.+)$/);
       if (headingMatch) {
         const level = headingMatch[1].length - 1;
@@ -248,8 +311,8 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
       }
     }
 
-    // --- XML ---
-    else if (format === 'xml') {
+    // --- XML & HTML ---
+    else if (format === 'xml' || format === 'html') {
       const tagMatch = trimmed.match(/^<([a-zA-Z0-9_:-]+)/);
       if (tagMatch && !tagMatch[1].startsWith('?') && !tagMatch[1].startsWith('!')) {
         // Show tags nested hierarchically
@@ -264,9 +327,42 @@ export function parseOutline(content: string, format: FileFormat): OutlineElemen
       }
     }
 
+    // --- CSS ---
+    else if (format === 'css') {
+      if (trimmed.endsWith('{') && !trimmed.startsWith('/*')) {
+        const selector = trimmed.slice(0, -1).trim();
+        if (selector) {
+          elements.push({
+            id,
+            label: selector,
+            type: selector.startsWith('@') ? 'section' : 'class',
+            line: i,
+            indent
+          });
+          continue;
+        }
+      }
+    }
+
+    // --- SQL ---
+    else if (format === 'sql') {
+      const sqlMatch = trimmed.match(/^(CREATE|ALTER|DROP|SELECT|INSERT|UPDATE|DELETE)\b(.*)$/i);
+      if (sqlMatch) {
+        const label = trimmed.substring(0, Math.min(trimmed.length, 40)) + (trimmed.length > 40 ? '...' : '');
+        elements.push({
+          id,
+          label,
+          type: 'section',
+          line: i,
+          indent
+        });
+        continue;
+      }
+    }
+
     // --- JSON ---
     else if (format === 'json') {
-      const keyMatch = trimmed.match(/^"([a-zA-Z0-9_]+)"\s*:/);
+      const keyMatch = trimmed.match(/^"([a-zA-Z0-9_.-]+)"\s*:/);
       if (keyMatch) {
         elements.push({
           id,

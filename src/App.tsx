@@ -62,12 +62,19 @@ import {
 import {
   initAuth,
   googleSignIn,
+  getAccessToken,
   logout,
   listDriveFiles,
   readFromDrive,
   saveToDrive,
   createDriveFolder,
   getMimeTypeForFilename,
+  extractDriveFileId,
+  isDriveReferenceLike,
+  resolveAndReadDriveReference,
+  getActiveDriveInfoForFilename,
+  registerActiveDriveFile,
+  addRecentDriveRef,
   DriveFile
 } from './utils/googleDrive';
 
@@ -173,8 +180,21 @@ function parseLvarc(content: string, isMobileOverride?: boolean): LvaConfig {
 }
 
 import { UrlImportModal } from './components/UrlImportModal';
+import { PosixPathModal, PosixActionType } from './components/PosixPathModal';
+import {
+  resolveAndReadPosixFile,
+  writePosixFile,
+  getActivePosixInfoForFilename,
+  getPosixRootConfig,
+  hasFallbackFilesInMemory,
+} from './utils/posixFileSystem';
 import { MarkdownPreview } from './components/MarkdownPreview';
 import { TableOfContents } from './components/TableOfContents';
+
+const isPosixPathLike = (raw: string): boolean => {
+  const c = (raw || '').replace(/^["']|["']$/g, '').trim();
+  return c.includes('/') || c.includes('\\') || c.startsWith('~') || c.startsWith('file://');
+};
 
 export default function App() {
   // Config States (determined by .lvarc and device type)
@@ -185,9 +205,13 @@ export default function App() {
   });
   const [syntaxHighlightOn, setSyntaxHighlightOn] = useState<boolean>(true);
 
-  // Markdown States
+  // Markdown & Import Modals States
   const [showMdPreview, setShowMdPreview] = useState<boolean>(false);
   const [isUrlImportModalOpen, setIsUrlImportModalOpen] = useState<boolean>(false);
+  const [isPosixModalOpen, setIsPosixModalOpen] = useState<boolean>(false);
+  const [initialPosixModalPath, setInitialPosixModalPath] = useState<string>('');
+  const [initialPosixModalAction, setInitialPosixModalAction] = useState<PosixActionType>('open');
+  const [activePosixPath, setActivePosixPath] = useState<string | null>(null);
 
   // Virtual File System State
   const [fileHistory, setFileHistory] = useState<string[]>([]);
@@ -313,6 +337,13 @@ export default function App() {
   const [fileSessionId, setFileSessionId] = useState<number>(0);
   const [format, setFormat] = useState<FileFormat>('txt');
   const [theme, setTheme] = useState<'light' | 'dark' | 'system'>('dark');
+
+  useEffect(() => {
+    const info = getActivePosixInfoForFilename(filename);
+    setActivePosixPath(info ? info.posixPath : null);
+    const driveInfo = getActiveDriveInfoForFilename(filename);
+    setActiveDriveFileId(driveInfo ? driveInfo.fileId : null);
+  }, [filename]);
   const [activeMode, setActiveMode] = useState<VimMode>('normal');
   const [lang, setLangState] = useState<'it' | 'en'>(() => {
     if (typeof window !== 'undefined') {
@@ -550,6 +581,7 @@ export default function App() {
   const [driveFolderHistory, setDriveFolderHistory] = useState<{ id: string; name: string }[]>([]);
   const [currentDriveFolderName, setCurrentDriveFolderName] = useState<string>('Il mio Drive');
   const [newDriveFolderName, setNewDriveFolderName] = useState<string>('');
+  const [driveQuickRefInput, setDriveQuickRefInput] = useState<string>('');
   const [isDriveFullScreen, setIsDriveFullScreen] = useState<boolean>(false);
   const [drivePickerFilter, setDrivePickerFilter] = useState<'all' | 'docs'>('all');
   const [pendingFileAction, setPendingFileAction] = useState<{
@@ -856,22 +888,25 @@ export default function App() {
   };
 
   const handleSaveToDrive = async () => {
-    if (!driveToken) {
+    const effectiveToken = driveToken || getAccessToken();
+    if (!effectiveToken) {
       showToast(lang === 'it' ? 'Devi prima accedere a Google Drive.' : 'You must first log in to Google Drive.', 'error');
       setSidebarTab('drive');
       return;
     }
-    
-    const confirmed = window.confirm(
-      lang === 'it' 
-        ? `Sei sicuro di voler salvare/sovrascrivere il file "${filename}" su Google Drive?`
-        : `Are you sure you want to save/overwrite the file "${filename}" to Google Drive?`
-    );
-    if (!confirmed) return;
 
     setIsLoadingDrive(true);
     try {
-      const res = await saveToDrive(driveToken, filename, content, activeDriveFileId, currentDriveFolderId === 'root' ? null : currentDriveFolderId);
+      const driveInfo = getActiveDriveInfoForFilename(filename);
+      const targetId = activeDriveFileId || driveInfo?.fileId || null;
+      const res = await saveToDrive(
+        effectiveToken,
+        filename,
+        content,
+        targetId,
+        currentDriveFolderId === 'root' ? null : currentDriveFolderId,
+        driveInfo?.mimeType
+      );
       setActiveDriveFileId(res.id);
       showToast(
         lang === 'it' 
@@ -879,7 +914,7 @@ export default function App() {
           : `File "${res.name}" successfully saved to Google Drive!`, 
         'success'
       );
-      fetchDriveFiles(driveToken, currentDriveFolderId);
+      fetchDriveFiles(effectiveToken, currentDriveFolderId);
     } catch (err: any) {
       showToast(
         lang === 'it' 
@@ -988,19 +1023,36 @@ export default function App() {
   };
 
   const handleOpenDriveFile = async (file: DriveFile) => {
-    if (!driveToken) return;
+    const effectiveToken = driveToken || getAccessToken();
+    if (!effectiveToken) return;
     setIsLoadingDrive(true);
     try {
-      const fileContent = await readFromDrive(driveToken, file.id, file.mimeType, file.name);
+      const fileContent = await readFromDrive(effectiveToken, file.id, file.mimeType, file.name);
       setContent(fileContent);
       setFilename(file.name);
       setActiveDriveFileId(file.id);
+      setActivePosixPath(null);
+
+      registerActiveDriveFile({
+        fileId: file.id,
+        filename: file.name,
+        mimeType: file.mimeType,
+        rawInput: `gdrive:${file.id}`,
+      });
+      addRecentDriveRef({
+        fileId: file.id,
+        filename: file.name,
+        mimeType: file.mimeType,
+        rawInput: `gdrive:${file.id}`,
+      });
       
       const ext = file.name.split('.').pop()?.toLowerCase() || 'txt';
       const formatMap: Record<string, FileFormat> = {
         txt: 'txt', md: 'md', docx: 'docx', json: 'json', xml: 'xml', py: 'py', kt: 'kt', js: 'js', ts: 'ts', sh: 'bash', bash: 'bash', tex: 'tex', java: 'java', c: 'c', cpp: 'cpp', ly: 'ly', lilypond: 'ly', html: 'html', htm: 'html', css: 'css', sql: 'sql', rs: 'rs', go: 'go'
       };
-      setFormat(formatMap[ext] || 'txt');
+      const targetFormat: FileFormat = file.mimeType === 'application/vnd.google-apps.document' ? 'md' : (formatMap[ext] || 'txt');
+      setFormat(targetFormat);
+      setFileSessionId(prev => prev + 1);
       
       // Add to virtualFiles and sync lvarc if applicable
       const isLvarcFile = file.name === '.lvarc' || file.name.endsWith('.lvarc') || file.name.endsWith('.lvarc.txt');
@@ -1013,16 +1065,16 @@ export default function App() {
       setVirtualFiles(prev => {
         const existing = prev.find(f => f.name === targetVirtualName);
         if (existing) {
-          return prev.map(f => f.name === targetVirtualName ? { ...f, content: fileContent } : f);
+          return prev.map(f => f.name === targetVirtualName ? { ...f, content: fileContent, format: targetFormat } : f);
         } else {
-          return [...prev, { name: targetVirtualName, format: formatMap[ext] || 'txt', content: fileContent }];
+          return [...prev, { name: targetVirtualName, format: targetFormat, content: fileContent }];
         }
       });
 
       showToast(
         lang === 'it' 
-          ? `File "${file.name}" caricato da Google Drive.` 
-          : `File "${file.name}" loaded from Google Drive.`, 
+          ? `File "${file.name}" caricato da Google Drive (ID: ${file.id}).` 
+          : `File "${file.name}" loaded from Google Drive (ID: ${file.id}).`, 
         'success'
       );
     } catch (err: any) {
@@ -1107,20 +1159,7 @@ export default function App() {
     }
   }, [theme]);
 
-  // Read current Vim mode from LiViA Status Bar periodically (or intercept)
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const statusText = document.querySelector('footer span.font-medium')?.textContent || '';
-      if (statusText.includes('INSERIMENTO')) {
-        setActiveMode('insert');
-      } else if (statusText.includes('COMMAND') || statusText.includes('sostituzione')) {
-        setActiveMode('command');
-      } else {
-        setActiveMode('normal');
-      }
-    }, 150);
-    return () => clearInterval(interval);
-  }, []);
+  // Active Vim mode is synchronized directly via VimEditor's onModeChange callback
 
   const handleUrlImport = (importedContent: string, suggestedFilename: string) => {
     // Generate unique name if it exists
@@ -1204,12 +1243,43 @@ export default function App() {
     }
   };
 
-  // Trigger simulated jump-to-line inside VimEditor
+  // Active cursor line (1-based) synchronized with VimEditor and Outline panel
+  const [activeCursorLine, setActiveCursorLine] = useState<number>(1);
+
+  const outlineElements = useMemo(() => parseOutline(content, format), [content, format]);
+
+  const activeOutlineElement = useMemo(() => {
+    if (!outlineElements.length) return null;
+    const cursorLine0Based = Math.max(0, activeCursorLine - 1);
+    let current = outlineElements[0];
+    for (const el of outlineElements) {
+      if (el.line <= cursorLine0Based) {
+        current = el;
+      } else {
+        break;
+      }
+    }
+    return current;
+  }, [outlineElements, activeCursorLine]);
+
+  useEffect(() => {
+    if (sidebarTab !== 'outline' || !showCheatsheet || !activeOutlineElement) return;
+    const itemEl = document.getElementById(`outline-item-${activeOutlineElement.line}`);
+    if (itemEl) {
+      itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activeOutlineElement?.id, activeOutlineElement?.line, sidebarTab, showCheatsheet]);
+
+  // Trigger jump-to-line inside VimEditor (line is 0-based from parseOutline)
   const handleJumpToLine = (line: number) => {
+    const targetLine1Based = line + 1;
+    setActiveCursorLine(targetLine1Based);
     const triggerBtn = document.getElementById('simulated-jump-trigger');
     if (triggerBtn) {
       triggerBtn.setAttribute('data-line', line.toString());
       triggerBtn.click();
+    } else {
+      window.dispatchEvent(new CustomEvent('livia-goto-line', { detail: { line: targetLine1Based } }));
     }
   };
 
@@ -1221,8 +1291,65 @@ export default function App() {
     }
   };
 
-  // State & handler for Gboard / System Keyboard Toggle
+  // State & handler for Gboard / System Keyboard Toggle & VisualViewport tracking
   const [isSoftKeyboardOpen, setIsSoftKeyboardOpen] = useState<boolean>(false);
+  const [isVisualKeyboardOpen, setIsVisualKeyboardOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    let baselineHeight = window.innerHeight;
+
+    const updateVisualViewport = () => {
+      const vv = window.visualViewport;
+      const currentInnerHeight = window.innerHeight;
+      if (currentInnerHeight > baselineHeight) {
+        baselineHeight = currentInnerHeight;
+      }
+
+      const visibleHeight = vv ? vv.height : currentInnerHeight;
+      document.documentElement.style.setProperty('--visual-viewport-height', `${Math.round(visibleHeight)}px`);
+
+      if (vv && vv.offsetTop > 0) {
+        window.scrollTo(0, 0);
+      }
+
+      const isMobileScreen = window.innerWidth < 1024;
+      const heightDiff = Math.max(baselineHeight, currentInnerHeight) - visibleHeight;
+      const keyboardDetected = isMobileScreen && heightDiff > 110;
+
+      setIsVisualKeyboardOpen(prev => {
+        if (keyboardDetected && !prev) {
+          setShowCheatsheet(false);
+        }
+        return keyboardDetected;
+      });
+    };
+
+    updateVisualViewport();
+
+    const vv = window.visualViewport;
+    if (vv) {
+      vv.addEventListener('resize', updateVisualViewport);
+      vv.addEventListener('scroll', updateVisualViewport);
+    }
+    window.addEventListener('resize', updateVisualViewport);
+
+    return () => {
+      if (vv) {
+        vv.removeEventListener('resize', updateVisualViewport);
+        vv.removeEventListener('scroll', updateVisualViewport);
+      }
+      window.removeEventListener('resize', updateVisualViewport);
+    };
+  }, []);
+
+  // Automatically close side/bottom tools panel on mobile when soft keyboard is toggled open
+  useEffect(() => {
+    if (isSoftKeyboardOpen && typeof window !== 'undefined' && window.innerWidth < 1024) {
+      setShowCheatsheet(false);
+    }
+  }, [isSoftKeyboardOpen]);
 
   const handleToggleSoftKeyboard = (forceState?: boolean) => {
     const triggerBtn = document.getElementById('simulated-soft-keyboard-toggle');
@@ -1236,9 +1363,47 @@ export default function App() {
     }
   };
 
-  // Export content to raw text or code file
+  // Export content to raw text or code file (or overwrite POSIX / Google Drive file if linked)
   const handleSaveFile = async () => {
     try {
+      // 1. Check if current file is linked to Google Drive
+      const driveInfo = getActiveDriveInfoForFilename(filename);
+      const effectiveDriveId = activeDriveFileId || driveInfo?.fileId;
+      const effectiveToken = driveToken || getAccessToken();
+      if (effectiveDriveId && effectiveToken) {
+        const saved = await saveToDrive(
+          effectiveToken,
+          filename,
+          content,
+          effectiveDriveId,
+          currentDriveFolderId === 'root' ? null : currentDriveFolderId,
+          driveInfo?.mimeType
+        );
+        setActiveDriveFileId(saved.id);
+        showToast(
+          lang === 'it'
+            ? `File "${saved.name}" sovrascritto direttamente su Google Drive (ID: ${saved.id}).`
+            : `File "${saved.name}" overwritten directly on Google Drive (ID: ${saved.id}).`,
+          'success'
+        );
+        return;
+      }
+
+      // 2. Check if current file is linked to a writable local POSIX file
+      const posixInfo = getActivePosixInfoForFilename(filename);
+      if (posixInfo?.canWriteDisk) {
+        const diskRes = await writePosixFile(filename, content);
+        if (diskRes.writtenToDisk) {
+          showToast(
+            lang === 'it'
+              ? `File "${filename}" sovrascritto direttamente in ${diskRes.posixPath}.`
+              : `File "${filename}" overwritten directly at ${diskRes.posixPath}.`,
+            'success'
+          );
+          return;
+        }
+      }
+
       const isDocx = format === 'docx' || filename.toLowerCase().endsWith('.docx');
       if (isDocx) {
         const { exportToDocx } = await import('./utils/docxExport');
@@ -1266,6 +1431,105 @@ export default function App() {
           ? `Errore durante il salvataggio del file: ${err?.message || ''}` 
           : `Error saving file: ${err?.message || ''}`, 
         'error'
+      );
+    }
+  };
+
+  const handleExecutePosixAction = async (posixPathOrDriveRef: string, action: PosixActionType) => {
+    if (isDriveReferenceLike(posixPathOrDriveRef)) {
+      const resolved = await resolveAndReadDriveReference(posixPathOrDriveRef, driveToken);
+      if (action === 'open') {
+        setFileHistory(prev => [...prev, filename]);
+        setVirtualFiles(prev => {
+          const updatedCurr = prev.map(f =>
+            f.name.toLowerCase() === filename.toLowerCase() ? { ...f, content } : f
+          );
+          const exists = updatedCurr.some(f => f.name.toLowerCase() === resolved.filename.toLowerCase());
+          if (exists) {
+            return updatedCurr.map(f =>
+              f.name.toLowerCase() === resolved.filename.toLowerCase()
+                ? { ...f, content: resolved.content, format: resolved.format }
+                : f
+            );
+          }
+          return [...updatedCurr, { name: resolved.filename, format: resolved.format, content: resolved.content }];
+        });
+        setContent(resolved.content);
+        setFilename(resolved.filename);
+        setFormat(resolved.format);
+        setActiveDriveFileId(resolved.fileId);
+        setActivePosixPath(null);
+        setFileSessionId(prev => prev + 1);
+        showToast(
+          lang === 'it'
+            ? `Aperto "${resolved.filename}" da Google Drive (ID: ${resolved.fileId}).`
+            : `Opened "${resolved.filename}" from Google Drive (ID: ${resolved.fileId}).`,
+          'success'
+        );
+      } else if (action === 'read') {
+        window.dispatchEvent(new CustomEvent('livia-insert-below-cursor', { detail: { text: resolved.content } }));
+        showToast(
+          lang === 'it'
+            ? `Inserito contenuto di "${resolved.filename}" (Drive ID: ${resolved.fileId}) al cursore.`
+            : `Inserted content of "${resolved.filename}" (Drive ID: ${resolved.fileId}) at cursor.`,
+          'success'
+        );
+      } else if (action === 'tear') {
+        await copyToClipboard(resolved.content);
+        showToast(
+          lang === 'it'
+            ? `Contenuto di "${resolved.filename}" (Drive ID: ${resolved.fileId}) copiato negli appunti.`
+            : `Content of "${resolved.filename}" (Drive ID: ${resolved.fileId}) copied to clipboard.`,
+          'success'
+        );
+      }
+      return;
+    }
+
+    const resolved = await resolveAndReadPosixFile(posixPathOrDriveRef);
+    if (action === 'open') {
+      setFileHistory(prev => [...prev, filename]);
+      setVirtualFiles(prev => {
+        const updatedCurr = prev.map(f =>
+          f.name.toLowerCase() === filename.toLowerCase() ? { ...f, content } : f
+        );
+        const exists = updatedCurr.some(f => f.name.toLowerCase() === resolved.filename.toLowerCase());
+        if (exists) {
+          return updatedCurr.map(f =>
+            f.name.toLowerCase() === resolved.filename.toLowerCase()
+              ? { ...f, content: resolved.content, format: resolved.format }
+              : f
+          );
+        }
+        return [...updatedCurr, { name: resolved.filename, format: resolved.format, content: resolved.content }];
+      });
+      setContent(resolved.content);
+      setFilename(resolved.filename);
+      setFormat(resolved.format);
+      setActivePosixPath(resolved.posixPath);
+      setActiveDriveFileId(null);
+      setFileSessionId(prev => prev + 1);
+      showToast(
+        lang === 'it'
+          ? `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+          : `Opened "${resolved.filename}" from POSIX path (${resolved.posixPath}).`,
+        'success'
+      );
+    } else if (action === 'read') {
+      window.dispatchEvent(new CustomEvent('livia-insert-below-cursor', { detail: { text: resolved.content } }));
+      showToast(
+        lang === 'it'
+          ? `Inserito contenuto di "${resolved.filename}" (${resolved.posixPath}) al cursore.`
+          : `Inserted content of "${resolved.filename}" (${resolved.posixPath}) at cursor.`,
+        'success'
+      );
+    } else if (action === 'tear') {
+      await copyToClipboard(resolved.content);
+      showToast(
+        lang === 'it'
+          ? `Contenuto di "${resolved.filename}" (${resolved.posixPath}) copiato negli appunti.`
+          : `Content of "${resolved.filename}" (${resolved.posixPath}) copied to clipboard.`,
+        'success'
       );
     }
   };
@@ -1414,8 +1678,14 @@ export default function App() {
         }}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
         onOpenAiAssistant={handleOpenAiAssistant}
-          onOpenUrlImport={() => setIsUrlImportModalOpen(true)}
-/>
+        onOpenUrlImport={() => setIsUrlImportModalOpen(true)}
+        onOpenPosixModal={() => {
+          setInitialPosixModalPath('');
+          setInitialPosixModalAction('open');
+          setIsPosixModalOpen(true);
+        }}
+        activePosixPath={activePosixPath}
+      />
 
       {/* Main Workspace Frame */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-1 sm:p-4 flex flex-col lg:flex-row gap-2 sm:gap-4 overflow-hidden min-h-0 min-w-0">
@@ -1513,9 +1783,11 @@ export default function App() {
             setEditorFontSize={setEditorFontSize}
             syntaxHighlightOn={syntaxHighlightOn}
             setSyntaxHighlightOn={setSyntaxHighlightOn}
-            onSaveFileState={(rawName, fileContent) => {
+            onCursorChange={(line) => setActiveCursorLine(line)}
+            onSaveFileState={async (rawName, fileContent) => {
               const cleanName = rawName.replace(/^["']|["']$/g, '').trim();
-              const name = cleanName.split(/[\/\\]/).pop() || cleanName;
+              const explicitDriveId = extractDriveFileId(cleanName);
+              const name = explicitDriveId ? filename : (cleanName.split(/[\/\\]/).pop() || cleanName);
               const val = sanitizeText(fileContent);
               setVirtualFiles(prev => {
                 const existing = prev.find(f => f.name.toLowerCase() === name.toLowerCase());
@@ -1535,13 +1807,116 @@ export default function App() {
               if (name === '.lvarc') {
                 reloadLvarc(val);
               }
+
+              // 1. Check if saving to Google Drive (via explicit Drive URL/ID in :w <ref> or active Drive file)
+              const driveInfo = getActiveDriveInfoForFilename(name);
+              const isSavingCurrentBuffer = name.toLowerCase() === filename.toLowerCase();
+              const targetDriveId = explicitDriveId || driveInfo?.fileId || (isSavingCurrentBuffer ? activeDriveFileId : null);
+              if (targetDriveId) {
+                const effectiveToken = driveToken || getAccessToken();
+                if (effectiveToken) {
+                  try {
+                    const savedDrive = await saveToDrive(
+                      effectiveToken,
+                      name,
+                      val,
+                      targetDriveId,
+                      currentDriveFolderId === 'root' ? null : currentDriveFolderId,
+                      driveInfo?.mimeType
+                    );
+                    setActiveDriveFileId(savedDrive.id);
+                    showToast(
+                      lang === 'it'
+                        ? `File "${savedDrive.name}" sovrascritto su Google Drive (ID: ${savedDrive.id}) e salvato in archivio.`
+                        : `File "${savedDrive.name}" overwritten on Google Drive (ID: ${savedDrive.id}) and saved to workspace.`,
+                      'success'
+                    );
+                    return;
+                  } catch (err) {
+                    console.warn('Google Drive write fallback to virtual workspace:', err);
+                  }
+                } else if (explicitDriveId) {
+                  setInitialPosixModalPath(cleanName);
+                  setInitialPosixModalAction('open');
+                  setIsPosixModalOpen(true);
+                  showToast(
+                    lang === 'it'
+                      ? 'Accedi a Google Drive per sovrascrivere il file remoto.'
+                      : 'Sign in to Google Drive to overwrite the remote file.',
+                    'info'
+                  );
+                  return;
+                }
+              }
+
+              // 2. Also overwrite original POSIX file on disk if authorized or if a POSIX path was explicitly given to :w
+              try {
+                const targetForPosix = isPosixPathLike(cleanName) ? cleanName : name;
+                const diskRes = await writePosixFile(targetForPosix, val);
+                if (diskRes.writtenToDisk) {
+                  setActivePosixPath(diskRes.posixPath);
+                  showToast(
+                    lang === 'it'
+                      ? `File "${name}" sovrascritto su disco (${diskRes.posixPath}) e salvato in archivio.`
+                      : `File "${name}" overwritten on disk (${diskRes.posixPath}) and saved to workspace.`,
+                    'success'
+                  );
+                  return;
+                }
+              } catch (err) {
+                console.warn('POSIX disk write fallback to virtual workspace:', err);
+              }
+
               showToast(lang === 'it' ? `File "${name}" salvato nel workspace.` : `File "${name}" saved to workspace.`, 'success');
             }}
-            onReadFileState={(rawName) => {
+            onReadFileState={async (rawName) => {
               const cleanName = rawName.replace(/^["']|["']$/g, '').trim();
+              if (isDriveReferenceLike(cleanName)) {
+                try {
+                  const resolved = await resolveAndReadDriveReference(cleanName, driveToken);
+                  return resolved.content;
+                } catch (err: any) {
+                  if (err?.code === 'NO_DRIVE_AUTH') {
+                    setInitialPosixModalPath(cleanName);
+                    setInitialPosixModalAction('read');
+                    setIsPosixModalOpen(true);
+                    showToast(
+                      lang === 'it'
+                        ? 'Accedi a Google Drive per inserire questo file tramite URL/ID.'
+                        : 'Sign in to Google Drive to insert this file via URL/ID.',
+                      'info'
+                    );
+                  } else {
+                    showToast(err?.message || (lang === 'it' ? 'Errore lettura da Google Drive.' : 'Error reading from Google Drive.'), 'error');
+                  }
+                  return null;
+                }
+              }
+
               const baseName = cleanName.split(/[\/\\]/).pop() || cleanName;
-              const file = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
-              return file ? file.content : null;
+              if (!isPosixPathLike(cleanName)) {
+                const vFile = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
+                if (vFile) return vFile.content;
+              }
+              try {
+                const resolved = await resolveAndReadPosixFile(cleanName);
+                return resolved.content;
+              } catch (err: any) {
+                if (err?.code === 'NO_ROOT_AUTHORIZED' && isPosixPathLike(cleanName)) {
+                  setInitialPosixModalPath(cleanName);
+                  setInitialPosixModalAction('read');
+                  setIsPosixModalOpen(true);
+                  showToast(
+                    lang === 'it'
+                      ? 'Autorizza la cartella radice per leggere da questo percorso POSIX.'
+                      : 'Authorize your root folder to read from this POSIX path.',
+                    'info'
+                  );
+                  return null;
+                }
+                const fallbackFile = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
+                return fallbackFile ? fallbackFile.content : null;
+              }
             }}
             onCloseFileState={(force: boolean) => {
               const currentSaved = virtualFiles.find(f => f.name.toLowerCase() === filename.toLowerCase());
@@ -1573,10 +1948,37 @@ export default function App() {
               setFileSessionId(prev => prev + 1);
               return { success: true, message: lang === 'it' ? 'Editor svuotato' : 'Editor cleared', isEmptyHistory: true };
             }}
-            onTearFileState={(rawTargetName) => {
+            onTearFileState={async (rawTargetName) => {
               if (!rawTargetName) return { found: false, name: '' };
               const cleanTarget = rawTargetName.replace(/^["']|["']$/g, '').trim();
+              if (isDriveReferenceLike(cleanTarget)) {
+                try {
+                  const resolved = await resolveAndReadDriveReference(cleanTarget, driveToken);
+                  return { found: true, name: resolved.filename, content: resolved.content };
+                } catch (err: any) {
+                  if (err?.code === 'NO_DRIVE_AUTH') {
+                    setInitialPosixModalPath(cleanTarget);
+                    setInitialPosixModalAction('tear');
+                    setIsPosixModalOpen(true);
+                  }
+                  return { found: false, name: cleanTarget };
+                }
+              }
+
               const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
+
+              if (isPosixPathLike(cleanTarget)) {
+                try {
+                  const resolved = await resolveAndReadPosixFile(cleanTarget);
+                  return { found: true, name: resolved.filename, content: resolved.content };
+                } catch (err: any) {
+                  if (err?.code === 'NO_ROOT_AUTHORIZED') {
+                    setInitialPosixModalPath(cleanTarget);
+                    setInitialPosixModalAction('tear');
+                    setIsPosixModalOpen(true);
+                  }
+                }
+              }
               
               let existing = virtualFiles.find(f => 
                 f.name.toLowerCase() === cleanTarget.toLowerCase() || 
@@ -1596,12 +1998,128 @@ export default function App() {
               if (existing) {
                 return { found: true, name: existing.name, content: existing.content };
               }
-              return { found: false, name: cleanTarget };
+
+              try {
+                const resolved = await resolveAndReadPosixFile(cleanTarget);
+                return { found: true, name: resolved.filename, content: resolved.content };
+              } catch {
+                return { found: false, name: cleanTarget };
+              }
             }}
-            onOpenFileState={(rawTargetName) => {
+            onOpenFileState={async (rawTargetName) => {
               if (!rawTargetName) return { found: false, name: '' };
               const cleanTarget = rawTargetName.replace(/^["']|["']$/g, '').trim();
+              if (isDriveReferenceLike(cleanTarget)) {
+                try {
+                  const resolved = await resolveAndReadDriveReference(cleanTarget, driveToken);
+                  setFileHistory(prev => [...prev, filename]);
+                  setVirtualFiles(prev => {
+                    const updatedCurr = prev.map(f =>
+                      f.name.toLowerCase() === filename.toLowerCase() ? { ...f, content } : f
+                    );
+                    const exists = updatedCurr.some(f => f.name.toLowerCase() === resolved.filename.toLowerCase());
+                    if (exists) {
+                      return updatedCurr.map(f =>
+                        f.name.toLowerCase() === resolved.filename.toLowerCase()
+                          ? { ...f, content: resolved.content, format: resolved.format }
+                          : f
+                      );
+                    }
+                    return [...updatedCurr, { name: resolved.filename, format: resolved.format, content: resolved.content }];
+                  });
+                  setContent(resolved.content);
+                  setFilename(resolved.filename);
+                  setFormat(resolved.format);
+                  setActiveDriveFileId(resolved.fileId);
+                  setActivePosixPath(null);
+                  setFileSessionId(prev => prev + 1);
+                  showToast(
+                    lang === 'it'
+                      ? `Aperto "${resolved.filename}" da Google Drive (ID: ${resolved.fileId}).`
+                      : `Opened "${resolved.filename}" from Google Drive (ID: ${resolved.fileId}).`,
+                    'info'
+                  );
+                  return { found: true, name: resolved.filename };
+                } catch (err: any) {
+                  if (err?.code === 'NO_DRIVE_AUTH') {
+                    setInitialPosixModalPath(cleanTarget);
+                    setInitialPosixModalAction('open');
+                    setIsPosixModalOpen(true);
+                    showToast(
+                      lang === 'it'
+                        ? 'Accedi a Google Drive per aprire direttamente tramite URL o ID.'
+                        : 'Sign in to Google Drive to open directly via URL or ID.',
+                      'info'
+                    );
+                    return { found: false, name: cleanTarget };
+                  }
+                  showToast(
+                    err?.message ||
+                      (lang === 'it'
+                        ? `File Google Drive non trovato: ${cleanTarget}`
+                        : `Google Drive file not found: ${cleanTarget}`),
+                    'error'
+                  );
+                  return { found: false, name: cleanTarget };
+                }
+              }
+
               const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
+
+              const rootCfg = getPosixRootConfig();
+              const hasMountedRoot = rootCfg.mode === 'fs_api' || hasFallbackFilesInMemory();
+              if (isPosixPathLike(cleanTarget) || hasMountedRoot) {
+                try {
+                  const resolved = await resolveAndReadPosixFile(cleanTarget);
+                  setFileHistory(prev => [...prev, filename]);
+                  setVirtualFiles(prev => {
+                    const updatedCurr = prev.map(f =>
+                      f.name.toLowerCase() === filename.toLowerCase() ? { ...f, content } : f
+                    );
+                    const exists = updatedCurr.some(f => f.name.toLowerCase() === resolved.filename.toLowerCase());
+                    if (exists) {
+                      return updatedCurr.map(f =>
+                        f.name.toLowerCase() === resolved.filename.toLowerCase()
+                          ? { ...f, content: resolved.content, format: resolved.format }
+                          : f
+                      );
+                    }
+                    return [...updatedCurr, { name: resolved.filename, format: resolved.format, content: resolved.content }];
+                  });
+                  setContent(resolved.content);
+                  setFilename(resolved.filename);
+                  setFormat(resolved.format);
+                  setActivePosixPath(resolved.posixPath);
+                  setActiveDriveFileId(null);
+                  setFileSessionId(prev => prev + 1);
+                  showToast(
+                    lang === 'it'
+                      ? `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+                      : `Opened "${resolved.filename}" from POSIX path (${resolved.posixPath}).`,
+                    'info'
+                  );
+                  return { found: true, name: resolved.filename };
+                } catch (err: any) {
+                  if (isPosixPathLike(cleanTarget)) {
+                    if (err?.code === 'NO_ROOT_AUTHORIZED') {
+                      setInitialPosixModalPath(cleanTarget);
+                      setInitialPosixModalAction('open');
+                      setIsPosixModalOpen(true);
+                      showToast(
+                        lang === 'it'
+                          ? 'Autorizza la tua cartella radice per aprire direttamente i percorsi POSIX.'
+                          : 'Authorize your root folder to open POSIX paths directly.',
+                        'info'
+                      );
+                      return { found: false, name: baseName };
+                    } else {
+                      showToast(err?.message || (lang === 'it' ? `File POSIX non trovato: ${cleanTarget}` : `POSIX file not found: ${cleanTarget}`), 'error');
+                      return { found: false, name: baseName };
+                    }
+                  }
+                }
+              }
+
               setFileHistory(prev => [...prev, filename]);
               // Build updated list synchronously to avoid state race conditions
               const updatedVirtual = virtualFiles.map(f => 
@@ -2100,17 +2618,22 @@ export default function App() {
             {sidebarTab === 'outline' && (
               <div className="flex flex-col gap-3 flex-1 overflow-y-auto">
                 <div className="bg-[#8AB4F8]/5 border border-[#8AB4F8]/10 rounded-xl p-3">
-                  <span className="text-[10px] tracking-wider font-bold text-[#8AB4F8] uppercase block">
-                    {lang === 'it' ? `Albero Simboli (${format.toUpperCase()})` : `Symbol Tree (${format.toUpperCase()})`}
-                  </span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] tracking-wider font-bold text-[#8AB4F8] uppercase block">
+                      {lang === 'it' ? `Albero Simboli (${format.toUpperCase()})` : `Symbol Tree (${format.toUpperCase()})`}
+                    </span>
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#8AB4F8]/15 text-[#8AB4F8] font-semibold">
+                      {lang === 'it' ? `Riga ${activeCursorLine}` : `Line ${activeCursorLine}`}
+                    </span>
+                  </div>
                   <p className="text-[11px] text-gray-500 dark:text-zinc-400 leading-relaxed mt-1 font-sans">
                     {lang === 'it'
-                      ? 'Fai clic su un elemento strutturale per saltare direttamente alla riga corrispondente nel file.'
-                      : 'Click on a structural element to jump directly to the corresponding line in the file.'}
+                      ? 'Sincronizzato con il cursore: naviga nel codice o fai clic su un simbolo per saltare alla riga.'
+                      : 'Synchronized with cursor: navigate code or click a symbol to jump to its line.'}
                   </p>
                 </div>
                 
-                {parseOutline(content, format).length === 0 ? (
+                {outlineElements.length === 0 ? (
                   <div className="text-center py-12 text-gray-400 dark:text-zinc-500 flex flex-col items-center justify-center gap-2 font-sans">
                     <ListCollapse size={28} className="opacity-40 text-[#8AB4F8]" />
                     <span className="text-xs font-semibold text-gray-600 dark:text-zinc-400">
@@ -2124,7 +2647,8 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="space-y-1 font-mono text-[11px] overflow-y-auto pr-1 max-h-[400px] lg:max-h-none">
-                    {parseOutline(content, format).map((el) => {
+                    {outlineElements.map((el) => {
+                      const isActive = activeOutlineElement?.id === el.id;
                       let colorClass = "text-gray-700 dark:text-zinc-300";
                       let badge = "EL";
                       if (el.type === 'class') {
@@ -2154,17 +2678,35 @@ export default function App() {
                         <button
                           key={el.id}
                           onClick={() => handleJumpToLine(el.line)}
-                          className="w-full flex items-center justify-between text-left hover:bg-gray-100 dark:hover:bg-[#2C313C]/30 p-1.5 rounded transition-all active:scale-95 cursor-pointer group"
+                          className={`w-full flex items-center justify-between text-left p-1.5 rounded transition-all active:scale-95 cursor-pointer group ${
+                            isActive
+                              ? 'bg-[#8AB4F8]/15 dark:bg-[#8AB4F8]/20 border-l-2 border-[#8AB4F8] shadow-xs'
+                              : 'hover:bg-gray-100 dark:hover:bg-[#2C313C]/30 border-l-2 border-transparent'
+                          }`}
                           style={{ paddingLeft: `${Math.max(6, el.indent * 12 + 6)}px` }}
                           id={`outline-item-${el.line}`}
                         >
                           <span className="flex items-center gap-1.5 truncate mr-2">
-                            <span className="w-4 h-4 text-[9px] font-bold rounded flex items-center justify-center bg-gray-100 dark:bg-zinc-800 text-gray-400 group-hover:bg-[#8AB4F8]/10 group-hover:text-[#8AB4F8]">
+                            <span
+                              className={`w-4 h-4 text-[9px] font-bold rounded flex items-center justify-center transition-colors ${
+                                isActive
+                                  ? 'bg-[#8AB4F8] text-[#1E2127]'
+                                  : 'bg-gray-100 dark:bg-zinc-800 text-gray-400 group-hover:bg-[#8AB4F8]/10 group-hover:text-[#8AB4F8]'
+                              }`}
+                            >
                               {badge}
                             </span>
-                            <span className={`${colorClass} truncate`}>{el.label}</span>
+                            <span className={`${colorClass} ${isActive ? 'font-bold underline decoration-[#8AB4F8]/50 underline-offset-2' : ''} truncate`}>
+                              {el.label}
+                            </span>
                           </span>
-                          <span className="text-[9px] text-gray-400 dark:text-zinc-500 shrink-0 font-sans group-hover:text-[#8AB4F8]">
+                          <span
+                            className={`text-[9px] shrink-0 font-sans ${
+                              isActive
+                                ? 'text-[#8AB4F8] font-bold'
+                                : 'text-gray-400 dark:text-zinc-500 group-hover:text-[#8AB4F8]'
+                            }`}
+                          >
                             {lang === 'it' ? `riga ${el.line + 1}` : `line ${el.line + 1}`}
                           </span>
                         </button>
@@ -2331,6 +2873,102 @@ export default function App() {
                       >
                         <RefreshCw size={14} className={isLoadingDrive ? 'animate-spin' : ''} />
                       </button>
+                    </div>
+
+                    {/* Quick Open / Insert via Google Drive URL or File ID */}
+                    <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-2.5 space-y-2 font-sans">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-blue-500 flex items-center gap-1">
+                          <Terminal size={11} />
+                          {lang === 'it' ? 'Apri da URL o ID Drive' : 'Open via Drive URL or ID'}
+                        </span>
+                        {activeDriveFileId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              navigator.clipboard.writeText(`gdrive:${activeDriveFileId}`).catch(() => {});
+                              showToast(lang === 'it' ? `Copiato gdrive:${activeDriveFileId}` : `Copied gdrive:${activeDriveFileId}`, 'info');
+                            }}
+                            className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-500 hover:bg-blue-500/20 flex items-center gap-1 cursor-pointer"
+                            title={lang === 'it' ? 'Copia ID Drive del file attivo' : 'Copy active file Drive ID'}
+                          >
+                            <Copy size={9} />
+                            ID: {activeDriveFileId.slice(0, 8)}…
+                          </button>
+                        )}
+                      </div>
+                      <input
+                        type="text"
+                        value={driveQuickRefInput}
+                        onChange={(e) => setDriveQuickRefInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && driveQuickRefInput.trim()) {
+                            e.preventDefault();
+                            const ref = driveQuickRefInput.trim();
+                            handleExecutePosixAction(
+                              isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                              'open'
+                            ).then(() => setDriveQuickRefInput('')).catch((err: any) => {
+                              showToast(err?.message || 'Errore apertura ID/URL Drive', 'error');
+                            });
+                          }
+                        }}
+                        placeholder={lang === 'it' ? 'Incolla URL Drive/Docs o File ID...' : 'Paste Drive/Docs URL or File ID...'}
+                        className="w-full bg-white dark:bg-[#0D0F12] border border-gray-200 dark:border-[#2D2D2D] rounded-lg px-2.5 py-1.5 text-[11px] font-mono text-gray-800 dark:text-[#E0E0E0] focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                          onClick={() => {
+                            const ref = driveQuickRefInput.trim();
+                            handleExecutePosixAction(
+                              isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                              'open'
+                            ).then(() => setDriveQuickRefInput('')).catch((err: any) => {
+                              showToast(err?.message || 'Errore apertura ID/URL Drive', 'error');
+                            });
+                          }}
+                          className="flex-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-[10px] font-bold font-mono cursor-pointer transition-colors"
+                          title={lang === 'it' ? 'Apri nell\'editor (:e)' : 'Open in editor (:e)'}
+                        >
+                          :e Apri
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                          onClick={() => {
+                            const ref = driveQuickRefInput.trim();
+                            handleExecutePosixAction(
+                              isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                              'read'
+                            ).then(() => setDriveQuickRefInput('')).catch((err: any) => {
+                              showToast(err?.message || 'Errore inserimento ID/URL Drive', 'error');
+                            });
+                          }}
+                          className="flex-1 py-1 px-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg text-[10px] font-bold font-mono cursor-pointer transition-colors"
+                          title={lang === 'it' ? 'Inserisci al cursore (:r)' : 'Insert at cursor (:r)'}
+                        >
+                          :r Inserisci
+                        </button>
+                        <button
+                          type="button"
+                          disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                          onClick={() => {
+                            const ref = driveQuickRefInput.trim();
+                            handleExecutePosixAction(
+                              isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                              'tear'
+                            ).then(() => setDriveQuickRefInput('')).catch((err: any) => {
+                              showToast(err?.message || 'Errore copia ID/URL Drive', 'error');
+                            });
+                          }}
+                          className="flex-1 py-1 px-2 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-lg text-[10px] font-bold font-mono cursor-pointer transition-colors"
+                          title={lang === 'it' ? 'Copia negli appunti (:tear)' : 'Copy to clipboard (:tear)'}
+                        >
+                          :tear Copia
+                        </button>
+                      </div>
                     </div>
 
                     {/* Filter / Search Drive Files */}
@@ -2651,8 +3289,10 @@ export default function App() {
       {/* Auxiliary Key Bar - Rendered conditionally with North-South Resizer Handle */}
       {!isDriveFullScreen && showAuxiliaryKeyboard && (
         <div 
-          style={{ height: `${keyboardHeight}px` }}
-          className="relative shrink-0 border-t border-gray-200 dark:border-[#2D2D2D] bg-gray-100 dark:bg-[#16181D] flex flex-col min-h-[80px] max-h-[32dvh] lg:max-h-[450px] transition-all duration-75"
+          style={{ 
+            height: `${(isSoftKeyboardOpen || isVisualKeyboardOpen) && typeof window !== 'undefined' && window.innerWidth < 1024 ? Math.min(keyboardHeight, 84) : keyboardHeight}px` 
+          }}
+          className="relative shrink-0 border-t border-gray-200 dark:border-[#2D2D2D] bg-gray-100 dark:bg-[#16181D] flex flex-col min-h-[72px] max-h-[32dvh] lg:max-h-[450px] transition-all duration-75"
         >
           {/* North-South Vertical Drag Resizer Handle */}
           <div
@@ -2741,6 +3381,95 @@ export default function App() {
             </div>
           ) : (
             <>
+          {/* Quick URL / File ID Open Bar + Search bar & Refresh */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-3 bg-blue-500/5 border border-blue-500/20 p-2.5 rounded-xl">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-blue-500 shrink-0">
+              <Terminal size={14} />
+              <span>{lang === 'it' ? 'URL o ID Diretto:' : 'Direct URL or ID:'}</span>
+            </div>
+            <input
+              type="text"
+              value={driveQuickRefInput}
+              onChange={(e) => setDriveQuickRefInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && driveQuickRefInput.trim()) {
+                  e.preventDefault();
+                  const ref = driveQuickRefInput.trim();
+                  handleExecutePosixAction(
+                    isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                    'open'
+                  ).then(() => {
+                    setDriveQuickRefInput('');
+                    setIsDriveFullScreen(false);
+                  }).catch((err: any) => {
+                    showToast(err?.message || 'Errore apertura ID/URL Drive', 'error');
+                  });
+                }
+              }}
+              placeholder={lang === 'it' ? 'Incolla URL Google Drive / Docs oppure File ID (es. 1BxiMVs0XRA5...)...' : 'Paste Google Drive / Docs URL or File ID...'}
+              className="flex-1 bg-white dark:bg-[#16181D] border border-gray-200 dark:border-[#2D2D2D] rounded-lg px-3 py-1.5 text-xs font-mono text-gray-800 dark:text-[#E0E0E0] focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                onClick={() => {
+                  const ref = driveQuickRefInput.trim();
+                  handleExecutePosixAction(
+                    isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                    'open'
+                  ).then(() => {
+                    setDriveQuickRefInput('');
+                    setIsDriveFullScreen(false);
+                  }).catch((err: any) => {
+                    showToast(err?.message || 'Errore apertura ID/URL Drive', 'error');
+                  });
+                }}
+                className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold font-mono cursor-pointer transition-colors"
+              >
+                :e Apri
+              </button>
+              <button
+                type="button"
+                disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                onClick={() => {
+                  const ref = driveQuickRefInput.trim();
+                  handleExecutePosixAction(
+                    isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                    'read'
+                  ).then(() => {
+                    setDriveQuickRefInput('');
+                    setIsDriveFullScreen(false);
+                  }).catch((err: any) => {
+                    showToast(err?.message || 'Errore inserimento ID/URL Drive', 'error');
+                  });
+                }}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold font-mono cursor-pointer transition-colors"
+              >
+                :r Inserisci
+              </button>
+              <button
+                type="button"
+                disabled={isLoadingDrive || !driveQuickRefInput.trim()}
+                onClick={() => {
+                  const ref = driveQuickRefInput.trim();
+                  handleExecutePosixAction(
+                    isDriveReferenceLike(ref) ? ref : `gdrive:${ref}`,
+                    'tear'
+                  ).then(() => {
+                    setDriveQuickRefInput('');
+                    setIsDriveFullScreen(false);
+                  }).catch((err: any) => {
+                    showToast(err?.message || 'Errore copia ID/URL Drive', 'error');
+                  });
+                }}
+                className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white rounded-lg text-xs font-bold font-mono cursor-pointer transition-colors"
+              >
+                :tear Copia
+              </button>
+            </div>
+          </div>
+
           {/* Search bar & Refresh */}
           <div className="flex items-center gap-3 mb-4">
             <div className="relative flex-1">
@@ -3046,6 +3775,20 @@ export default function App() {
           onClose={() => setIsUrlImportModalOpen(false)}
           lang={lang}
           onImport={handleUrlImport}
+        />
+
+        <PosixPathModal
+          isOpen={isPosixModalOpen}
+          onClose={() => setIsPosixModalOpen(false)}
+          initialPath={initialPosixModalPath}
+          initialAction={initialPosixModalAction}
+          activePosixPath={activePosixPath}
+          activeDriveFileId={activeDriveFileId}
+          driveUser={driveUser}
+          onDriveSignIn={handleDriveSignIn}
+          currentFilename={filename}
+          lang={lang}
+          onExecutePosixAction={handleExecutePosixAction}
         />
 </div>
   );
