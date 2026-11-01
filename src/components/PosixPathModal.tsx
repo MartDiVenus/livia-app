@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   FolderOpen,
+  FolderPlus,
+  FileCheck2,
   Terminal,
   ClipboardPaste,
   FileText,
@@ -22,7 +24,15 @@ import {
   getPosixRootConfig,
   savePosixRootConfig,
   getSavedRootDirHandle,
-  saveRootDirHandle,
+  addMountedDirectoryHandle,
+  getMountedDirectoriesMeta,
+  removeMountedDirectory,
+  getBoundPosixFilesMeta,
+  removeBoundPosixFile,
+  promptAndBindSinglePosixFile,
+  getDetectedHomePrefix,
+  setDetectedHomePrefix,
+  detectAndSaveHomePrefix,
   clearPosixRootAuthorization,
   registerFallbackDirectoryFiles,
   hasFallbackFilesInMemory,
@@ -30,6 +40,8 @@ import {
   removeRecentPosixPath,
   normalizePosixPath,
   PosixRootConfig,
+  MountedPosixDirectoryMeta,
+  BoundPosixFileMeta,
   RecentPosixEntry,
 } from '../utils/posixFileSystem';
 import {
@@ -72,7 +84,9 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
   const [posixInput, setPosixInput] = useState(initialPath);
   const [action, setAction] = useState<PosixActionType>(initialAction);
   const [config, setConfig] = useState<PosixRootConfig>(() => getPosixRootConfig());
-  const [basePrefixInput, setBasePrefixInput] = useState(() => getPosixRootConfig().basePrefix);
+  const [mountedDirs, setMountedDirs] = useState<MountedPosixDirectoryMeta[]>(() => getMountedDirectoriesMeta());
+  const [boundFiles, setBoundFiles] = useState<BoundPosixFileMeta[]>(() => getBoundPosixFilesMeta());
+  const [detectedHome, setDetectedHome] = useState<string>(() => getDetectedHomePrefix());
   const [hasFsHandle, setHasFsHandle] = useState(false);
   const [recentPaths, setRecentPaths] = useState<RecentPosixEntry[]>([]);
   const [recentDriveRefs, setRecentDriveRefs] = useState<RecentDriveEntry[]>([]);
@@ -82,17 +96,24 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
   const inputRef = useRef<HTMLInputElement>(null);
   const fallbackDirInputRef = useRef<HTMLInputElement>(null);
 
+  const refreshMetadataState = () => {
+    const currentCfg = getPosixRootConfig();
+    setConfig(currentCfg);
+    setMountedDirs(getMountedDirectoriesMeta());
+    setBoundFiles(getBoundPosixFilesMeta());
+    setDetectedHome(getDetectedHomePrefix());
+    setRecentPaths(getRecentPosixPaths());
+    setRecentDriveRefs(getRecentDriveRefs());
+  };
+
   useEffect(() => {
     if (isOpen) {
-      const currentCfg = getPosixRootConfig();
-      setConfig(currentCfg);
-      setBasePrefixInput(currentCfg.basePrefix || '');
-      setRecentPaths(getRecentPosixPaths());
-      setRecentDriveRefs(getRecentDriveRefs());
-      setStatusMessage(null);
       if (initialPath) {
         setPosixInput(initialPath);
+        detectAndSaveHomePrefix(initialPath);
       }
+      refreshMetadataState();
+      setStatusMessage(null);
       setAction(initialAction);
 
       getSavedRootDirHandle().then((handle) => {
@@ -112,11 +133,22 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
   const detectedDriveId = extractDriveFileId(posixInput);
   const isDriveInput = Boolean(detectedDriveId);
 
+  const handleInputChange = (val: string) => {
+    setPosixInput(val);
+    if (val.trim() && !isDriveReferenceLike(val)) {
+      const home = detectAndSaveHomePrefix(val);
+      if (home && home !== detectedHome) {
+        setDetectedHome(home);
+      }
+    }
+  };
+
   const handlePasteFromClipboard = async () => {
     try {
       const text = await navigator.clipboard.readText();
       if (text) {
-        setPosixInput(text.trim());
+        const trimmed = text.trim();
+        handleInputChange(trimmed);
         setStatusMessage({
           type: 'info',
           text: isIt
@@ -142,24 +174,33 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     if (typeof win.showDirectoryPicker === 'function') {
       try {
         const dirHandle = await win.showDirectoryPicker({ mode: 'readwrite' });
-        await saveRootDirHandle(dirHandle);
-        const updatedConfig: PosixRootConfig = {
-          rootName: dirHandle.name,
-          basePrefix: basePrefixInput.trim(),
-          mode: 'fs_api',
-        };
-        savePosixRootConfig(updatedConfig);
-        setConfig(updatedConfig);
+        const meta = await addMountedDirectoryHandle(dirHandle);
+        refreshMetadataState();
         setHasFsHandle(true);
         setStatusMessage({
           type: 'success',
           text: isIt
-            ? `Cartella radice "${dirHandle.name}" autorizzata con successo (Lettura + Scrittura :w diretta).`
-            : `Root folder "${dirHandle.name}" authorized (Read + Direct :w Write).`,
+            ? `Cartella "${meta.name}" aggiunta a $HOME virtuale (${meta.basePrefix || meta.name}) con lettura e scrittura :w diretta.`
+            : `Folder "${meta.name}" added to virtual $HOME (${meta.basePrefix || meta.name}) with direct :w read/write.`,
         });
         return;
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
+        const msg = String(err?.message || '');
+        if (
+          err?.name === 'SecurityError' ||
+          err?.name === 'NotAllowedError' ||
+          msg.toLowerCase().includes('system') ||
+          msg.toLowerCase().includes('restricted')
+        ) {
+          setStatusMessage({
+            type: 'info',
+            text: isIt
+              ? 'Il browser blocca la selezione dell\'intera $HOME come cartella unica (per proteggere .ssh/.gnupg), ma permette di aprire QUALSIASI file singolo nella $HOME! Clicca su "Aggancia File Singolo ($HOME)" oppure aggiungi le singole sottocartelle (Documenti, Scrivania, Scaricati...).'
+              : 'The browser blocks selecting the entire $HOME root as a folder, but allows opening ANY single file in $HOME! Click "Bind Single File ($HOME)" or add individual subfolders (Documents, Desktop, Downloads...).',
+          });
+          return;
+        }
         fallbackDirInputRef.current?.click();
       }
     } else {
@@ -167,12 +208,38 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     }
   };
 
+  const handleBindSingleFile = async () => {
+    setStatusMessage(null);
+    setIsLoading(true);
+    try {
+      const targetPath = !isDriveInput && posixInput.trim() ? normalizePosixPath(posixInput.trim()) : undefined;
+      const resolved = await promptAndBindSinglePosixFile(targetPath);
+      refreshMetadataState();
+      setPosixInput(resolved.posixPath);
+      await onExecutePosixAction(resolved.posixPath, action);
+      onClose();
+    } catch (err: any) {
+      if (err?.name === 'AbortError' || String(err?.message || '').includes('annullata')) {
+        return;
+      }
+      setStatusMessage({
+        type: 'error',
+        text:
+          err?.message ||
+          (isIt
+            ? 'Impossibile agganciare il file selezionato.'
+            : 'Could not bind the selected file.'),
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleFallbackDirectorySelected = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-    const updated = registerFallbackDirectoryFiles(files, basePrefixInput.trim());
-    setConfig(updated);
-    setHasFsHandle(false);
+    const updated = registerFallbackDirectoryFiles(files);
+    refreshMetadataState();
     setStatusMessage({
       type: 'success',
       text: isIt
@@ -182,27 +249,13 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     e.target.value = '';
   };
 
-  const handleSaveBasePrefix = () => {
-    const updated: PosixRootConfig = {
-      ...config,
-      basePrefix: basePrefixInput.trim(),
-    };
-    savePosixRootConfig(updated);
-    setConfig(updated);
-    setStatusMessage({
-      type: 'info',
-      text: isIt ? 'Prefisso POSIX base aggiornato.' : 'Base POSIX prefix updated.',
-    });
-  };
-
-  const handleDisconnectRoot = async () => {
+  const handleDisconnectAllRoots = async () => {
     await clearPosixRootAuthorization();
-    setConfig({ rootName: '', basePrefix: '', mode: 'none' });
-    setBasePrefixInput('');
+    refreshMetadataState();
     setHasFsHandle(false);
     setStatusMessage({
       type: 'info',
-      text: isIt ? 'Autorizzazione cartella radice rimossa.' : 'Root folder authorization cleared.',
+      text: isIt ? 'Tutte le cartelle autorizzate sono state scollegate.' : 'All authorized folders disconnected.',
     });
   };
 
@@ -221,26 +274,23 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
       return;
     }
 
-    if (!isDriveTarget && basePrefixInput.trim() !== config.basePrefix) {
-      const updated = { ...config, basePrefix: basePrefixInput.trim() };
-      savePosixRootConfig(updated);
-      setConfig(updated);
+    if (!isDriveTarget) {
+      detectAndSaveHomePrefix(cleaned);
     }
 
     setIsLoading(true);
     setStatusMessage(null);
     try {
       await onExecutePosixAction(cleaned, targetAction);
-      setRecentPaths(getRecentPosixPaths());
-      setRecentDriveRefs(getRecentDriveRefs());
+      refreshMetadataState();
       onClose();
     } catch (err: any) {
       if (err?.code === 'NO_ROOT_AUTHORIZED') {
         setStatusMessage({
-          type: 'error',
+          type: 'info',
           text: isIt
-            ? 'Prima di aprire un percorso POSIX locale, autorizza la tua cartella di lavoro (es. Documenti, Progetti o Home) usando il pulsante "Autorizza Cartella Radice" qui sotto.'
-            : 'Before opening a local POSIX path, please authorize your root folder using the "Authorize Root Folder" button below.',
+            ? 'Percorso non ancora autorizzato: clicca su "Aggancia File Singolo ($HOME)" per selezionare direttamente il file e memorizzarne il permesso, oppure aggiungi la sua sottocartella.'
+            : 'Path not yet authorized: click "Bind Single File ($HOME)" to select the file directly and remember permission, or add its subfolder.',
         });
       } else if (err?.code === 'NO_DRIVE_AUTH') {
         setStatusMessage({
@@ -265,6 +315,8 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
   };
 
   const isRootReady =
+    mountedDirs.length > 0 ||
+    boundFiles.length > 0 ||
     (config.mode === 'fs_api' && hasFsHandle) ||
     (config.mode === 'fallback' && hasFallbackFilesInMemory());
 
@@ -280,16 +332,16 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
             <div>
               <h2 className="text-base font-bold text-zinc-100 flex items-center gap-2 flex-wrap">
                 {isIt
-                  ? 'Apri / Importa da Percorso POSIX o URL/ID Google Drive'
-                  : 'Open / Import via POSIX Path or Google Drive URL/ID'}
+                  ? 'Apri / Importa da Percorso POSIX ($HOME) o URL/ID Google Drive'
+                  : 'Open / Import via POSIX Path ($HOME) or Google Drive URL/ID'}
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-zinc-800 text-emerald-400 border border-zinc-700">
                   :e &bull; :r &bull; :tear &bull; :w
                 </span>
               </h2>
               <p className="text-xs text-zinc-400">
                 {isIt
-                  ? 'Incolla un percorso POSIX locale (/path/file) oppure un URL, gdrive:<ID> o File ID di Google Drive / Docs.'
-                  : 'Paste a local POSIX path (/path/file) or a Google Drive / Docs URL, gdrive:<ID>, or File ID.'}
+                  ? 'Supporta file diretti in $HOME (~/file, /home/user/file), multi-cartella e URL/ID Google Drive.'
+                  : 'Supports direct files in $HOME (~/file, /home/user/file), multi-folder mounts, and Google Drive URL/ID.'}
               </p>
             </div>
           </div>
@@ -356,8 +408,8 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-400">
                 {isIt
-                  ? '1. Percorso POSIX, URL Google Drive/Docs o File ID'
-                  : '1. POSIX Path, Google Drive/Docs URL or File ID'}
+                  ? '1. Percorso POSIX (/home/user/file, ~/file), URL Google Drive o ID'
+                  : '1. POSIX Path (/home/user/file, ~/file), Google Drive URL or ID'}
               </label>
               {posixInput.trim() && (
                 <span
@@ -389,7 +441,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                   ref={inputRef}
                   type="text"
                   value={posixInput}
-                  onChange={(e) => setPosixInput(e.target.value)}
+                  onChange={(e) => handleInputChange(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
@@ -400,8 +452,8 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                   }}
                   placeholder={
                     isIt
-                      ? '/home/user/file.js  oppure  https://drive.google.com/file/d/...  o  gdrive:1BxiMVs...'
-                      : '/home/user/file.js  or  https://drive.google.com/file/d/...  or  gdrive:1BxiMVs...'
+                      ? '/home/user/miofile.md  o  ~/nota.txt  o  https://drive.google.com/file/d/...'
+                      : '/home/user/myfile.md  or  ~/note.txt  or  https://drive.google.com/file/d/...'
                   }
                   className="w-full bg-zinc-950 border border-zinc-700 focus:border-emerald-500 rounded-lg px-3.5 py-2.5 text-zinc-100 font-mono text-xs sm:text-sm outline-none transition-colors"
                 />
@@ -530,38 +582,30 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
             )}
           </div>
 
-          {/* Section 2B: Root Directory Authorization (One-Time Setup) */}
-          <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-3">
+          {/* Section 2B: Multi-Folder Virtual $HOME & Single-File Binding */}
+          <div className="p-4 rounded-xl bg-zinc-950/80 border border-zinc-800 space-y-3.5">
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2">
                 <HardDrive size={16} className={isRootReady ? 'text-emerald-400' : 'text-amber-400'} />
                 <span className="text-xs font-semibold uppercase tracking-wider text-zinc-300">
-                  {isIt ? '2. Cartella Radice Locale Autorizzata (POSIX)' : '2. Authorized Local Root Folder (POSIX)'}
+                  {isIt
+                    ? '2. Accesso POSIX $HOME: Multi-Cartella e File Singoli'
+                    : '2. POSIX $HOME Access: Multi-Folder & Single Files'}
                 </span>
               </div>
 
-              {isRootReady ? (
-                <span className="inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+              {detectedHome && (
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
                   <ShieldCheck size={13} />
-                  {config.mode === 'fs_api'
-                    ? isIt
-                      ? `Attiva: "${config.rootName}" (Lettura/Scrittura :w)`
-                      : `Active: "${config.rootName}" (Read/Write :w)`
-                    : isIt
-                    ? `Attiva: "${config.rootName}" (${config.indexedFileCount || 0} file indicizzati)`
-                    : `Active: "${config.rootName}" (${config.indexedFileCount || 0} indexed files)`}
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/30">
-                  {isIt ? 'Nessuna cartella radice collegata' : 'No root folder linked'}
+                  $HOME = {detectedHome} (~)
                 </span>
               )}
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed">
               {isIt
-                ? 'Per i percorsi POSIX locali, autorizza una sola volta la tua cartella radice (es. la tua home, Documenti o workspace). Da quel momento potrai aprire qualsiasi file locale con :e /percorso/file.ext.'
-                : 'For local POSIX paths, authorize your root workspace folder once. After that, you can open any local file instantly with :e /path/to/file.ext.'}
+                ? 'Se inserisci un percorso nella $HOME (es. ~/file.txt o /home/utente/file.txt) non ancora coperto dalle cartelle montate, premendo Invio si aprirà automaticamente il selettore file prefiltrato e il permesso verrà memorizzato in modo permanente per :e e :w. Puoi anche montare più sottocartelle della $HOME contemporaneamente.'
+                : 'If you enter a $HOME path not yet covered by mounted folders, pressing Enter automatically opens the pre-filtered file selector and permanently saves permission for :e and :w. You can also mount multiple $HOME subfolders simultaneously.'}
             </p>
 
             {/* Hidden fallback input for webkitdirectory */}
@@ -577,17 +621,29 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={handleBindSingleFile}
+                className="px-3.5 py-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-200 rounded-lg border border-emerald-500/40 flex items-center gap-2 text-xs font-semibold transition-colors"
+                title={
+                  isIt
+                    ? 'Seleziona e aggancia qualsiasi file singolo anche direttamente nella radice $HOME (nessuna limitazione del browser)'
+                    : 'Select and bind any single file directly inside $HOME root (no browser restriction)'
+                }
+              >
+                <FileCheck2 size={15} className="text-emerald-400" />
+                {isIt
+                  ? 'Aggancia File Singolo ($HOME)...'
+                  : 'Bind Single File ($HOME)...'}
+              </button>
+
+              <button
+                type="button"
                 onClick={handleAuthorizeNativeDirectory}
                 className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded-lg border border-zinc-700 flex items-center gap-2 text-xs font-medium transition-colors"
               >
-                <FolderOpen size={15} className="text-emerald-400" />
-                {isRootReady
-                  ? isIt
-                    ? 'Cambia / Riautorizza Cartella Radice'
-                    : 'Change / Re-authorize Root Folder'
-                  : isIt
-                  ? 'Autorizza Cartella Radice...'
-                  : 'Authorize Root Folder...'}
+                <FolderPlus size={15} className="text-emerald-400" />
+                {isIt
+                  ? '+ Aggiungi Sottocartella (Documenti, Scrivania...)'
+                  : '+ Add Subfolder (Documents, Desktop...)'}
               </button>
 
               <button
@@ -601,36 +657,119 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                 }
               >
                 <RefreshCw size={13} className="text-zinc-400" />
-                {isIt ? 'Indicizza Cartella (Fallback Mobile/iFrame)' : 'Index Folder (Mobile/iFrame Fallback)'}
+                {isIt ? 'Indicizza Cartella (Mobile)' : 'Index Folder (Mobile)'}
               </button>
 
-              {isRootReady && (
+              {(mountedDirs.length > 0 || boundFiles.length > 0) && (
                 <button
                   type="button"
-                  onClick={handleDisconnectRoot}
+                  onClick={handleDisconnectAllRoots}
                   className="px-2.5 py-2 text-zinc-400 hover:text-red-400 hover:bg-red-950/30 rounded-lg text-xs transition-colors ml-auto"
                 >
-                  {isIt ? 'Scollega' : 'Disconnect'}
+                  {isIt ? 'Scollega Tutto' : 'Disconnect All'}
                 </button>
               )}
             </div>
 
-            {/* Optional Base POSIX Prefix mapping */}
+            {/* Mounted Subdirectories List */}
+            {mountedDirs.length > 0 && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+                  <FolderOpen size={12} className="text-emerald-400" />
+                  {isIt
+                    ? `Sottocartelle Montate (${mountedDirs.length}):`
+                    : `Mounted Subfolders (${mountedDirs.length}):`}
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {mountedDirs.map((dir) => (
+                    <div
+                      key={dir.id}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-zinc-900 border border-zinc-700 text-xs font-mono text-zinc-200"
+                    >
+                      <span className="text-emerald-400 font-semibold">{dir.name}</span>
+                      {dir.basePrefix && (
+                        <span className="text-[10px] text-zinc-500">({dir.basePrefix})</span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          await removeMountedDirectory(dir.id);
+                          refreshMetadataState();
+                        }}
+                        className="text-zinc-500 hover:text-red-400 ml-1"
+                        title={isIt ? 'Rimuovi cartella' : 'Remove folder'}
+                      >
+                        <X size={12} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Bound Single Files in $HOME List */}
+            {boundFiles.length > 0 && (
+              <div className="pt-2 border-t border-zinc-800/80 space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400 flex items-center gap-1.5">
+                  <FileCheck2 size={12} className="text-emerald-400" />
+                  {isIt
+                    ? `File Singoli Agganciati in $HOME / Disco (${boundFiles.length}):`
+                    : `Bound Single Files in $HOME / Disk (${boundFiles.length}):`}
+                </div>
+                <div className="max-h-28 overflow-y-auto divide-y divide-zinc-800/50 border border-zinc-800 rounded-lg bg-zinc-900/50">
+                  {boundFiles.map((bf) => (
+                    <div
+                      key={bf.posixPath}
+                      className="px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs hover:bg-zinc-900"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPosixInput(bf.posixPath);
+                          executePath(bf.posixPath, action);
+                        }}
+                        className="flex-1 text-left font-mono text-emerald-300 hover:underline truncate"
+                      >
+                        {bf.posixPath}
+                      </button>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {bf.canWriteDisk && (
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            :w
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            await removeBoundPosixFile(bf.posixPath);
+                            refreshMetadataState();
+                          }}
+                          className="p-0.5 text-zinc-500 hover:text-red-400"
+                          title={isIt ? 'Rimuovi permesso file' : 'Remove file permission'}
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Detected $HOME Prefix Display/Override */}
             <div className="pt-2 border-t border-zinc-800/80 flex flex-col sm:flex-row sm:items-center gap-2">
               <label className="text-[11px] text-zinc-400 shrink-0">
-                {isIt ? 'Prefisso POSIX della Cartella Radice (opzionale):' : 'Root Folder POSIX Prefix (optional):'}
+                {isIt ? 'Percorso $HOME rilevato automaticamente (~):' : 'Auto-detected $HOME path (~):'}
               </label>
               <div className="flex gap-1.5 flex-1">
                 <input
                   type="text"
-                  value={basePrefixInput}
-                  onChange={(e) => setBasePrefixInput(e.target.value)}
-                  onBlur={handleSaveBasePrefix}
-                  placeholder={
-                    config.rootName
-                      ? `/home/user/${config.rootName}  o  /storage/emulated/0/${config.rootName}`
-                      : '/home/user/workspace'
-                  }
+                  value={detectedHome}
+                  onChange={(e) => {
+                    setDetectedHome(e.target.value);
+                    setDetectedHomePrefix(e.target.value);
+                  }}
+                  placeholder="/home/user"
                   className="flex-1 bg-zinc-900 border border-zinc-800 focus:border-zinc-600 rounded px-2.5 py-1 text-xs font-mono text-zinc-200 outline-none"
                 />
               </div>
@@ -780,8 +919,8 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
         <div className="px-5 py-3.5 bg-zinc-950 border-t border-zinc-800 flex items-center justify-between gap-3">
           <div className="text-[11px] text-zinc-500 font-mono hidden sm:block">
             {isIt
-              ? 'Vim: :e /path/file  oppure  :e gdrive:<ID>  oppure  :e <URL_Drive>'
-              : 'Vim: :e /path/file  or  :e gdrive:<ID>  or  :e <Drive_URL>'}
+              ? 'Vim: :e ~/file  o  :e /home/user/file  o  :e gdrive:<ID>'
+              : 'Vim: :e ~/file  or  :e /home/user/file  or  :e gdrive:<ID>'}
           </div>
           <div className="flex items-center gap-2 ml-auto">
             <button
@@ -820,4 +959,3 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     </div>
   );
 };
-

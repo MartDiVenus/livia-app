@@ -1,48 +1,51 @@
-# Piano di Implementazione: Apertura, Inserimento e Salvataggio tramite URL o ID di Google Drive
+# Piano di Implementazione: Accesso POSIX Senza Limitazioni su `$HOME` e Sottocartelle
 
-## Obiettivo
-Estendere il flusso testuale rapido già realizzato per i percorsi POSIX in modo da supportare nativamente anche **URL completi di Google Drive / Google Docs**, riferimenti con prefisso (`gdrive:<ID>` o `drive:<ID>`) e **File ID puri di Google Drive**, sia tramite comandi Vim (`:e`, `:r`, `:tear`, `:w`, `:wq`) sia tramite interfaccia grafica (estendendo il modale `POSIX` e il pannello `Google Drive`).
+## 1. Obiettivo e Architettura
+I browser Chromium impongono un blocco di sicurezza cablato sull'API `showDirectoryPicker()` quando si tenta di selezionare direttamente la radice della `$HOME` (`/home/<user>`, `/Users/<user>`, `C:\Users\<user>`), ma **consentono pienamente**:
+1. La selezione di **qualsiasi file singolo anche direttamente dentro `$HOME`** tramite `window.showOpenFilePicker()`.
+2. L'autorizzazione contemporanea di **più sottocartelle della `$HOME`** (es. `~/Documenti`, `~/Scrivania`, `~/Scaricati`, `~/Progetti`) tramite `window.showDirectoryPicker()`.
 
----
-
-## 1. Parser e Risolutore di Riferimenti Google Drive (`/src/utils/googleDrive.ts`)
-- **Riconoscimento ed estrazione del File ID (`extractDriveFileId` & `isDriveReferenceLike`)**:
-  - Supporto automatico per:
-    - URL Google Drive: `https://drive.google.com/file/d/<FILE_ID>/...`, `https://drive.google.com/open?id=<FILE_ID>`, `https://drive.google.com/uc?id=<FILE_ID>`
-    - URL Google Docs / Sheets / Slides: `https://docs.google.com/document/d/<FILE_ID>/...`, `https://docs.google.com/spreadsheets/d/<FILE_ID>/...`, `https://docs.google.com/presentation/d/<FILE_ID>/...`
-    - Prefissi espliciti: `gdrive:<FILE_ID_O_URL>`, `drive:<FILE_ID_O_URL>`, `gdoc:<FILE_ID_O_URL>`
-    - File ID puro di Google Drive: stringhe alfanumeriche con `-` e `_` tipiche degli ID Google Drive (es. lunghezza 25–50 caratteri, prive di `/` o estensioni di file locali).
-- **Recupero Metadati e Contenuto (`resolveAndReadDriveReference`)**:
-  - Dato un input testuale (URL, `gdrive:...` o ID), estrae il `fileId`, interroga `https://www.googleapis.com/drive/v3/files/<fileId>?fields=id,name,mimeType,modifiedTime,parents` per ottenere nome reale, MIME type e formato LiViA (`FileFormat`), quindi scarica/converte il contenuto tramite `readFromDrive` (supportando file di testo/codice, Markdown, Google Docs nativi convertiti in Markdown e file `.docx`).
-- **Aggiornamento / Sovrascrittura Diretta (`updateDriveFileContent`)**:
-  - Per i file normali (testo, Markdown, codice, `.docx`) usa `saveToDrive(accessToken, filename, content, fileId)`.
-  - Per i documenti Google Docs nativi (`application/vnd.google-apps.document`), converte il Markdown in HTML formattato (`convertMarkdownToGoogleDocsHtml`) ed esegue l'aggiornamento `PATCH` multipart su `https://www.googleapis.com/upload/drive/v3/files/<fileId>?uploadType=multipart` mantenendo invariato il `fileId`.
-- **Registro e Cronologia File Drive Recenti (`localStorage`)**:
-  - Mantiene l'associazione tra `filename` aperto nell'editor e `{ fileId, name, mimeType, rawInput }` e salva la cronologia degli ultimi URL/ID Google Drive aperti per il riutilizzo con un clic.
+Per eliminare ogni attrito nell'uso dei percorsi POSIX testuali (es. `/home/mario/.bashrc`, `~/note.md`, `/home/mario/Documenti/app.js`), LiViA passerà da un singolo handle radice a un **Virtual `$HOME` Multi-Mount + Direct File Handle Registry** persistente in `IndexedDB`.
 
 ---
 
-## 2. Integrazione nei Comandi Vim (`/src/App.tsx` e `/src/components/VimEditor.tsx`)
-- **`:e <URL | gdrive:ID | ID>` (Apertura in Editor)**:
-  - Se l'argomento di `:e` viene riconosciuto da `isDriveReferenceLike`, verifica la presenza del token Google Drive (se non autenticato, avvia `googleSignIn` o apre il modale precompilato), scarica metadati e contenuto, imposta `activeDriveFileId` e apre il documento nell'editor.
-- **`:r <URL | gdrive:ID | ID>` (Inserimento sotto il cursore)**:
-  - Scarica il contenuto del file da Google Drive tramite l'URL o l'ID fornito e lo inserisce direttamente sotto la riga corrente del cursore.
-- **`:tear <URL | gdrive:ID | ID>` (Copia rapida negli appunti)**:
-  - Scarica il contenuto del file da Google Drive e lo copia immediatamente negli appunti di sistema.
-- **`:w` / `:wq` e `:w <URL | gdrive:ID | ID>` (Salvataggio diretto senza conferma aggiuntiva)**:
-  - Quando il file attivo è collegato a un `activeDriveFileId` (oppure quando viene passato esplicitamente un URL/ID Drive a `:w <target>`), `:w` e `:wq` salvano nello spazio di lavoro locale e **sovrascrivono direttamente il file su Google Drive senza finestre di conferma intermedie**, mostrando una notifica toast di conferma.
+## 2. Modifiche Principali
+
+### A. Motore POSIX Multi-Cartella e Aggancio File Singoli (`src/utils/posixFileSystem.ts`)
+1. **Registro Multi-Cartella (`MountedPosixDirectory[]`) in IndexedDB**:
+   - Sostituzione/estensione del singolo `root_dir_handle` con una collezione persistente di cartelle autorizzate (`posix_dir_mounts` in IndexedDB + metadati in `localStorage`).
+   - Possibilità di montare contemporaneamente quante sottocartelle della `$HOME` si desidera (es. `Documenti`, `Scaricati`, `Scrivania`, `workspace`, ecc.) senza che una nuova autorizzazione sovrascriva le precedenti.
+2. **Registro Permanente di File Singoli (`BoundPosixFileHandle[]`) in IndexedDB**:
+   - Creazione dello store/chiave `posix_file_handles` in IndexedDB che mappa un percorso POSIX normalizzato (es. `/home/mario/appunti.md` o `~/todo.txt`) direttamente al suo `FileSystemFileHandle` nativo (con permessi di lettura e scrittura `:w`).
+   - Quando un file nella `$HOME` (o fuori dalle cartelle montate) viene agganciato una volta, tutte le successive aperture `:e /home/mario/appunti.md`, letture `:r`, copie `:tear` e salvataggi `:w` funzionano istantaneamente su disco senza richiedere nuove selezioni.
+3. **Rilevamento Automatico del Prefisso `$HOME` (`/home/<utente>` / `~`)**:
+   - Quando l'utente inserisce un percorso POSIX (es. `/home/mario/Documenti/progetto/index.js`) e una delle cartelle montate si chiama `Documenti` o `progetto`, il motore deduce e memorizza automaticamente la radice utente `/home/mario` come alias di `~`, associando il mount point `/home/mario/Documenti` alla cartella `Documenti`.
+   - Risoluzione intelligente multi-mount: dato qualsiasi percorso `/home/utente/<cartella>/<sottopercorso>`, LiViA cerca automaticamente:
+     1. Nei file singoli agganciati (`posix_file_handles`) per corrispondenza esatta o suffisso `~/...`.
+     2. In tutte le cartelle montate (`posix_dir_mounts`) verificando prefisso esplicito, nome della cartella presente nei segmenti del percorso POSIX (es. `/home/utente/Scaricati/file.txt` -> cartella montata `Scaricati` -> `file.txt`), o percorso relativo.
+4. **Fallback Automatico su Selettore File Prefiltrato (`promptAndBindSinglePosixFile`)**:
+   - Se un percorso POSIX inserito con `:e`, `:r`, `:tear` o nella modale non è ancora coperto da alcuna cartella montata (tipicamente un file situato direttamente nella radice `$HOME` come `/home/utente/file.txt` o `~/file.txt`), LiViA invoca automaticamente `window.showOpenFilePicker()` prefiltrato sull'estensione del file cercato (con fallback trasparente su `<input type="file">` sui browser mobile/non-Chromium).
+   - Non appena l'utente conferma il file nel selettore, LiViA:
+     - Memorizza il `FileSystemFileHandle` in IndexedDB associato all'esatto percorso POSIX digitato.
+     - Deduce automaticamente il prefisso `$HOME` dal percorso digitato.
+     - Completa immediatamente l'azione richiesta (`:e`, `:r` o `:tear`) e abilita `:w` per sovrascrivere direttamente il file originale in `$HOME`.
 
 ---
 
-## 3. Estensione Interfaccia UI (`/src/components/PosixPathModal.tsx`, `/src/components/Toolbar.tsx`, `/src/App.tsx`)
-- **Modale Unificato Percorsi POSIX & URL/ID Google Drive (`PosixPathModal.tsx`)**:
-  - Il campo di input accetta sia percorsi POSIX (`/home/...`, `~/...`) sia URL o File ID di Google Drive, rilevando automaticamente il tipo di sorgente inserita o incollata dagli appunti.
-  - Mostra lo stato di connessione a Google Drive (con pulsante rapido di login se non connesso) e un badge quando il documento corrente è collegato a un file Google Drive (con pulsante per copiare l'ID o il link diretto).
-  - Include l'elenco combinato o filtrabile dei percorsi POSIX recenti e dei file Google Drive aperti di recente tramite URL/ID.
-- **Barra Rapida URL/ID nel Pannello Google Drive (`App.tsx`)**:
-  - Sia nella scheda laterale `Drive` che nella vista Google Drive a schermo intero, aggiunge un campo rapido **"Apri o Strappa da URL / ID Drive"** con pulsante Incolla e azioni rapide (`:e` Apri, `:r` Inserisci, `:tear` Copia).
+### B. Interfaccia Modale POSIX e Gestione Multi-Mount (`src/components/PosixPathModal.tsx`)
+1. **Gestione Cartelle Montate & File Singoli Agganciati in `$HOME`**:
+   - Visualizzazione dell'elenco di tutte le cartelle attualmente autorizzate (con pulsante **"+ Aggiungi Cartella"** per montare più sottocartelle della `$HOME` e pulsante per rimuovere singole cartelle).
+   - Visualizzazione dei file singoli agganciati direttamente (es. file nella radice `$HOME`), con pulsante **"Aggancia File in `$HOME`..."** e rimozione rapida.
+2. **Spiegazione Chiara e Flusso Automatico su `$HOME`**:
+   - Se `showDirectoryPicker()` restituisce un errore di restrizione di sistema (quando si tenta di selezionare l'intera `$HOME` come cartella), invece di un errore generico, LiViA spiega che il browser protegge la radice `$HOME` come cartella unica e propone immediatamente con 1 clic di **agganciare il file singolo in `$HOME`** oppure di **aggiungere le sottocartelle desiderate**.
+   - Quando si preme Invio o "Apri Percorso (:e)" su un percorso POSIX non ancora autorizzato, si apre direttamente il selettore file prefiltrato per agganciare e aprire subito il file e memorizzarne il permesso.
 
 ---
 
-## 4. Verifica
-- Compilazione completa del progetto tramite `compile_applet` per verificare l'assenza di errori TypeScript o di build.
+### C. Integrazione trasparente nei Comandi Vim `:e`, `:r`, `:tear` e `:w` (`src/App.tsx`)
+1. **Apertura Diretta da `:e /home/user/file`, `:r`, `:tear`**:
+   - Quando l'utente esegue `:e ~/miofile.txt` o `:e /home/utente/miofile.txt`:
+     - Se il file è già in una cartella montata o già agganciato in IndexedDB, si apre all'istante.
+     - Se non è ancora coperto dai permessi attivi, LiViA avvia direttamente il selettore file prefiltrato (`promptAndBindSinglePosixFile`) per agganciarlo, memorizzarlo in IndexedDB e aprirlo subito nell'editor senza passaggi intermedi; solo se il browser blocca il popup per assenza di *user gesture* diretta, apre la modale POSIX già pronta sul percorso inserito.
+2. **Salvataggio Diretto `:w` anche su File in `$HOME`**:
+   - `writePosixFile` controlla sia i `FileSystemFileHandle` dei file singoli in `$HOME` sia tutte le cartelle montate in `IndexedDB`, garantendo che `:w` sovrascriva direttamente su disco qualsiasi file aperto dalla `$HOME` o dalle sue sottocartelle.

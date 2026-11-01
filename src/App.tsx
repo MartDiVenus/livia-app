@@ -185,15 +185,21 @@ import {
   resolveAndReadPosixFile,
   writePosixFile,
   getActivePosixInfoForFilename,
-  getPosixRootConfig,
-  hasFallbackFilesInMemory,
+  hasAnyPosixAuthorization,
 } from './utils/posixFileSystem';
 import { MarkdownPreview } from './components/MarkdownPreview';
 import { TableOfContents } from './components/TableOfContents';
 
 const isPosixPathLike = (raw: string): boolean => {
   const c = (raw || '').replace(/^["']|["']$/g, '').trim();
-  return c.includes('/') || c.includes('\\') || c.startsWith('~') || c.startsWith('file://');
+  return (
+    c.includes('/') ||
+    c.includes('\\') ||
+    c.startsWith('~') ||
+    c.startsWith('$HOME') ||
+    c.startsWith('${HOME}') ||
+    c.startsWith('file://')
+  );
 };
 
 export default function App() {
@@ -1895,22 +1901,23 @@ export default function App() {
               }
 
               const baseName = cleanName.split(/[\/\\]/).pop() || cleanName;
-              if (!isPosixPathLike(cleanName)) {
+              const pathLike = isPosixPathLike(cleanName);
+              if (!pathLike) {
                 const vFile = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
                 if (vFile) return vFile.content;
               }
               try {
-                const resolved = await resolveAndReadPosixFile(cleanName);
+                const resolved = await resolveAndReadPosixFile(cleanName, { autoPromptFilePicker: pathLike });
                 return resolved.content;
               } catch (err: any) {
-                if (err?.code === 'NO_ROOT_AUTHORIZED' && isPosixPathLike(cleanName)) {
+                if (err?.code === 'NO_ROOT_AUTHORIZED' && pathLike) {
                   setInitialPosixModalPath(cleanName);
                   setInitialPosixModalAction('read');
                   setIsPosixModalOpen(true);
                   showToast(
                     lang === 'it'
-                      ? 'Autorizza la cartella radice per leggere da questo percorso POSIX.'
-                      : 'Authorize your root folder to read from this POSIX path.',
+                      ? 'Seleziona il file o autorizza la sottocartella per leggere questo percorso POSIX.'
+                      : 'Select the file or authorize the subfolder to read this POSIX path.',
                     'info'
                   );
                   return null;
@@ -1967,10 +1974,11 @@ export default function App() {
               }
 
               const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
+              const pathLike = isPosixPathLike(cleanTarget);
 
-              if (isPosixPathLike(cleanTarget)) {
+              if (pathLike) {
                 try {
-                  const resolved = await resolveAndReadPosixFile(cleanTarget);
+                  const resolved = await resolveAndReadPosixFile(cleanTarget, { autoPromptFilePicker: true });
                   return { found: true, name: resolved.filename, content: resolved.content };
                 } catch (err: any) {
                   if (err?.code === 'NO_ROOT_AUTHORIZED') {
@@ -2001,7 +2009,7 @@ export default function App() {
               }
 
               try {
-                const resolved = await resolveAndReadPosixFile(cleanTarget);
+                const resolved = await resolveAndReadPosixFile(cleanTarget, { autoPromptFilePicker: false });
                 return { found: true, name: resolved.filename, content: resolved.content };
               } catch {
                 return { found: false, name: cleanTarget };
@@ -2066,12 +2074,12 @@ export default function App() {
               }
 
               const baseName = cleanTarget.split(/[\/\\]/).pop() || cleanTarget;
+              const pathLike = isPosixPathLike(cleanTarget);
+              const hasMountedRoot = hasAnyPosixAuthorization();
 
-              const rootCfg = getPosixRootConfig();
-              const hasMountedRoot = rootCfg.mode === 'fs_api' || hasFallbackFilesInMemory();
-              if (isPosixPathLike(cleanTarget) || hasMountedRoot) {
+              if (pathLike || hasMountedRoot) {
                 try {
-                  const resolved = await resolveAndReadPosixFile(cleanTarget);
+                  const resolved = await resolveAndReadPosixFile(cleanTarget, { autoPromptFilePicker: pathLike });
                   setFileHistory(prev => [...prev, filename]);
                   setVirtualFiles(prev => {
                     const updatedCurr = prev.map(f =>
@@ -2101,15 +2109,15 @@ export default function App() {
                   );
                   return { found: true, name: resolved.filename };
                 } catch (err: any) {
-                  if (isPosixPathLike(cleanTarget)) {
+                  if (pathLike) {
                     if (err?.code === 'NO_ROOT_AUTHORIZED') {
                       setInitialPosixModalPath(cleanTarget);
                       setInitialPosixModalAction('open');
                       setIsPosixModalOpen(true);
                       showToast(
                         lang === 'it'
-                          ? 'Autorizza la tua cartella radice per aprire direttamente i percorsi POSIX.'
-                          : 'Authorize your root folder to open POSIX paths directly.',
+                          ? 'Seleziona il file in $HOME o autorizza la sottocartella per aprire questo percorso POSIX.'
+                          : 'Select the file in $HOME or authorize the subfolder to open this POSIX path.',
                         'info'
                       );
                       return { found: false, name: baseName };
