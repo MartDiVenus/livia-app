@@ -4,7 +4,7 @@ export async function testGeminiConnection(apiKey: string, lang: string = 'it'):
   if (apiKey) {
     try {
       const client = new GoogleGenAI({ apiKey });
-      const testModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      const testModels = ["gemini-3.8-flash", "gemini-4-argon", "gemini-flash-latest"];
       let activeModel = "gemini-3.8-flash";
       let succeeded = false;
       let lastErr: any = null;
@@ -59,18 +59,18 @@ export async function generateGeminiContent(payload: any, lang: string = 'it'): 
       
       const { action, text, targetLanguage, prompt, theme, modelTier, systemInstruction } = payload;
 
-      let tier = (modelTier || 'flash').trim();
-      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7')) {
+      let tier = (modelTier || 'flash').trim().toLowerCase();
+      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7') || tier === 'flash-lite') {
         tier = 'flash';
       }
 
-      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
-      if (tier === 'flash-lite') {
-        modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-flash-latest"];
+      if (tier === 'argon' || tier === 'gemini-4-argon' || tier === '4-argon') {
+        modelsToTry = ["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-flash-latest"];
       } else if (tier === 'pro' || tier === 'pro-thinking') {
-        modelsToTry = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+        modelsToTry = ["gemini-3.1-pro-preview", "gemini-4-argon", "gemini-3.8-flash", "gemini-flash-latest"];
       } else if (tier.startsWith('gemini-')) {
-        modelsToTry = [tier, "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+        modelsToTry = [tier, "gemini-3.8-flash", "gemini-flash-latest"];
       }
 
       let contents = "";

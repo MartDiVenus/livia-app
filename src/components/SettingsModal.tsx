@@ -57,7 +57,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
-  const [defaultModel, setDefaultModel] = useState<'flash' | 'pro' | 'flash-lite' | 'pro-thinking'>('flash');
+  const [defaultModel, setDefaultModel] = useState<'flash' | 'pro' | 'argon' | 'pro-thinking'>('flash');
   const [activeTab, setActiveTab] = useState<'ai' | 'editor' | 'misc'>('ai');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; isCloudDisabled?: boolean } | null>(null);
@@ -100,11 +100,11 @@ export function SettingsModal({
       const savedKey = localStorage.getItem('livia_custom_gemini_key') || '';
       setApiKeyInput(savedKey);
       const rawModel = (localStorage.getItem('livia_gemini_model') || localStorage.getItem('livia_default_model') || 'flash');
-      let sanitizedModel: 'flash-lite' | 'flash' | 'pro' | 'pro-thinking' = 'flash';
-      if (rawModel === 'flash-lite' || rawModel === 'pro' || rawModel === 'pro-thinking') {
+      let sanitizedModel: 'flash' | 'pro' | 'argon' | 'pro-thinking' = 'flash';
+      if (rawModel === 'argon' || rawModel === 'pro' || rawModel === 'pro-thinking') {
         sanitizedModel = rawModel;
       }
-      if (typeof rawModel === 'string' && (rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5') || rawModel.includes('3.7'))) {
+      if (typeof rawModel === 'string' && (rawModel === 'flash-lite' || rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5') || rawModel.includes('3.7'))) {
         sanitizedModel = 'flash';
         localStorage.setItem('livia_gemini_model', 'flash');
         localStorage.setItem('livia_default_model', 'flash');
@@ -151,14 +151,16 @@ export function SettingsModal({
     );
   };
 
-  const handleModelChange = (model: 'flash-lite' | 'flash' | 'pro' | 'pro-thinking') => {
+  const handleModelChange = (model: 'flash' | 'pro' | 'argon' | 'pro-thinking') => {
     setDefaultModel(model);
     localStorage.setItem('livia_default_model', model);
     localStorage.setItem('livia_gemini_model', model);
+    window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model } }));
+    const label = model === 'argon' ? '4.0 Argon (gemini-4-argon)' : model === 'pro' ? '3.1 Pro' : '3.8 Flash';
     showToast(
       lang === 'it'
-        ? `Modello AI predefinito impostato su Gemini ${model.toUpperCase()}`
-        : `Default AI model set to Gemini ${model.toUpperCase()}`,
+        ? `Modello AI predefinito impostato su Gemini ${label}`
+        : `Default AI model set to Gemini ${label}`,
       'info'
     );
   };
@@ -386,36 +388,19 @@ export function SettingsModal({
                 </h3>
                 <div className="flex flex-col gap-2">
                   <button
-                    onClick={() => handleModelChange('flash-lite')}
-                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
-                      defaultModel === 'flash-lite'
-                        ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
-                        : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
-                      <span>🚀 3.1 Flash-Lite</span>
-                      {defaultModel === 'flash-lite' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
-                    </div>
-                    <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Ultrarapido, ideale per modifiche veloci e bassa latenza.' : 'Ultra-fast, lowest latency.'}
-                    </p>
-                  </button>
-
-                  <button
                     onClick={() => handleModelChange('flash')}
                     className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       defaultModel === 'flash'
-                        ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
+                        ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-400 dark:border-emerald-700/60'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
-                      <span>⚡ 3.8 Flash (Consigliato)</span>
-                      {defaultModel === 'flash' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
+                      <span>⚡ 3.8 Flash (Consigliato / Free Tier)</span>
+                      {defaultModel === 'flash' && <Check size={14} className="text-emerald-600 dark:text-emerald-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Massimo equilibrio tra accuratezza e velocità (gemini-3.8-flash).' : 'Optimal balance between accuracy and speed (gemini-3.8-flash).'}
+                      {lang === 'it' ? 'Massimo equilibrio tra accuratezza, velocità e quota gratuita (gemini-3.8-flash).' : 'Optimal balance between accuracy, speed, and free quota (gemini-3.8-flash).'}
                     </p>
                   </button>
 
@@ -423,16 +408,33 @@ export function SettingsModal({
                     onClick={() => handleModelChange('pro')}
                     className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
                       defaultModel === 'pro'
-                        ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-300 dark:border-amber-700/50'
+                        ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-400 dark:border-indigo-700/60'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
                       <span>🧠 3.1 Pro (Avanzato)</span>
-                      {defaultModel === 'pro' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
+                      {defaultModel === 'pro' && <Check size={14} className="text-indigo-600 dark:text-indigo-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Ragionamento profondo e sintassi complessa (gemini-3.1-pro).' : 'Deep reasoning and complex syntax (gemini-3.1-pro).'}
+                      {lang === 'it' ? 'Ragionamento profondo e sintassi complessa (gemini-3.1-pro-preview).' : 'Deep reasoning and complex syntax (gemini-3.1-pro-preview).'}
+                    </p>
+                  </button>
+
+                  <button
+                    onClick={() => handleModelChange('argon')}
+                    className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
+                      defaultModel === 'argon'
+                        ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-400 dark:border-amber-700/60'
+                        : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
+                      <span>🔥 4.0 Argon (Top / Ultima Generazione)</span>
+                      {defaultModel === 'argon' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
+                    </div>
+                    <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
+                      {lang === 'it' ? 'Ultimo modello ammiraglia ad altissima capacità di ragionamento e codice (gemini-4-argon).' : 'Latest flagship model with top reasoning and coding capabilities (gemini-4-argon).'}
                     </p>
                   </button>
                 </div>

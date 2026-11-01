@@ -86,7 +86,7 @@ interface LvaConfig {
   syntaxHighlight: boolean;
   lang?: 'it' | 'en';
   apiKey?: string;
-  model?: 'flash' | 'pro' | 'flash-lite' | 'pro-thinking';
+  model?: 'flash' | 'pro' | 'argon' | 'pro-thinking';
 }
 
 export function checkIsMobile(): boolean {
@@ -156,9 +156,9 @@ function parseLvarc(content: string, isMobileOverride?: boolean): LvaConfig {
     }
 
     
-    if (trimmed === 'gem model flash-lite' || trimmed === 'set model=flash-lite' || trimmed === 'gem model=flash-lite') {
-      config.model = 'flash-lite';
-    } else if (trimmed === 'gem model flash' || trimmed === 'set model=flash' || trimmed === 'gem model=flash') {
+    if (trimmed === 'gem model argon' || trimmed === 'set model=argon' || trimmed === 'gem model=argon' || trimmed === 'gem model gemini-4-argon') {
+      config.model = 'argon';
+    } else if (trimmed === 'gem model flash' || trimmed === 'set model=flash' || trimmed === 'gem model=flash' || trimmed === 'gem model flash-lite' || trimmed === 'set model=flash-lite' || trimmed === 'gem model=flash-lite') {
       config.model = 'flash';
     } else if (trimmed === 'gem model pro-thinking' || trimmed === 'set model=pro-thinking' || trimmed === 'gem model=pro-thinking') {
       config.model = 'pro-thinking';
@@ -272,15 +272,15 @@ export default function App() {
       }
       
       const payload: any = { action, text: textToProcess, userApiKey, systemInstruction };
+      let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
+      if (storedTier === 'flash-lite' || storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
+        storedTier = 'flash';
+        if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+      }
+      payload.modelTier = storedTier;
       if (action === 'translate') payload.targetLanguage = arg;
       if (action === 'prompt') { 
         payload.prompt = arg; 
-        let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-        if (storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
-          storedTier = 'flash';
-          if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
-        }
-        payload.modelTier = storedTier; 
       }
       if (action === 'latin') payload.theme = arg;
       
@@ -450,33 +450,47 @@ export default function App() {
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedModel = localStorage.getItem('livia_gemini_model');
-      if (savedModel && (savedModel.includes('2.5') || savedModel.includes('2.0') || savedModel.includes('1.5') || savedModel.includes('3.7'))) {
+      if (savedModel && (savedModel === 'flash-lite' || savedModel.includes('2.5') || savedModel.includes('2.0') || savedModel.includes('1.5') || savedModel.includes('3.7'))) {
         localStorage.setItem('livia_gemini_model', 'flash');
       }
       const savedDef = localStorage.getItem('livia_default_model');
-      if (savedDef && (savedDef.includes('2.5') || savedDef.includes('2.0') || savedDef.includes('1.5') || savedDef.includes('3.7'))) {
+      if (savedDef && (savedDef === 'flash-lite' || savedDef.includes('2.5') || savedDef.includes('2.0') || savedDef.includes('1.5') || savedDef.includes('3.7'))) {
         localStorage.setItem('livia_default_model', 'flash');
       }
     }
   }, []);
 
-  const [activeAiModel, setActiveAiModel] = useState<'flash' | 'flash-lite' | 'pro'>(() => {
+  const [activeAiModel, setActiveAiModel] = useState<'flash' | 'pro' | 'argon'>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('livia_gemini_model');
-      if (stored === 'flash-lite' || stored === 'pro') return stored;
+      if (stored === 'pro' || stored === 'argon') return stored;
     }
     return 'flash';
   });
 
-  const handleSelectAiModel = (m: 'flash' | 'flash-lite' | 'pro') => {
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onModelChanged = (e: Event) => {
+      const customEvent = e as CustomEvent<{ model?: string }>;
+      const m = customEvent.detail?.model || localStorage.getItem('livia_gemini_model');
+      if (m === 'flash' || m === 'pro' || m === 'argon') {
+        setActiveAiModel(m);
+      }
+    };
+    window.addEventListener('livia-model-changed', onModelChanged);
+    return () => window.removeEventListener('livia-model-changed', onModelChanged);
+  }, []);
+
+  const handleSelectAiModel = (m: 'flash' | 'pro' | 'argon') => {
     setActiveAiModel(m);
     if (typeof window !== 'undefined') {
       localStorage.setItem('livia_gemini_model', m);
+      window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: m } }));
     }
     showToast(
       lang === 'it' 
-        ? `Modello impostato: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`
-        : `Model set: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`,
+        ? `Modello impostato: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'argon' ? 'Gemini 4 Argon (gemini-4-argon)' : 'Gemini 3.1 Pro'}`
+        : `Model set: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'argon' ? 'Gemini 4 Argon (gemini-4-argon)' : 'Gemini 3.1 Pro'}`,
       'info'
     );
   };
@@ -741,6 +755,9 @@ export default function App() {
     }
     if (config.model) {
       localStorage.setItem('livia_gemini_model', config.model);
+      if (config.model === 'flash' || config.model === 'pro' || config.model === 'argon') {
+        setActiveAiModel(config.model);
+      }
     }
   };
 
@@ -1728,8 +1745,8 @@ export default function App() {
                   id="ai-bar-model-select"
                 >
                   <option value="flash">⚡ 3.8 Flash (Free Tier)</option>
-                  <option value="flash-lite">🚀 3.1 Flash-Lite (Veloce)</option>
                   <option value="pro">🧠 3.1 Pro (Avanzato)</option>
+                  <option value="argon">🔥 4.0 Argon (Top / Ultimo)</option>
                 </select>
               </div>
 
@@ -3145,6 +3162,14 @@ export default function App() {
                   {openGuideSection === 'ai' && (
                     <div className="p-3 space-y-2 text-[10.5px] border-t border-blue-100 dark:border-[#2D2D2D] text-gray-700 dark:text-zinc-300">
                       <p>
+                        <strong>{lang === 'it' ? 'Modelli Disponibili:' : 'Available Models:'}</strong>
+                      </p>
+                      <ul className="space-y-1 list-disc pl-4">
+                        <li><strong>⚡ Gemini 3.8 Flash</strong> (<code>gemini-3.8-flash</code>): {lang === 'it' ? 'Veloce e ottimizzato per il Free Tier.' : 'Fast and optimized for the Free Tier.'}</li>
+                        <li><strong>🧠 Gemini 3.1 Pro</strong> (<code>gemini-3.1-pro-preview</code>): {lang === 'it' ? 'Ragionamento avanzato e testi complessi.' : 'Advanced reasoning and complex texts.'}</li>
+                        <li><strong>🔥 Gemini 4 Argon</strong> (<code>gemini-4-argon</code>): {lang === 'it' ? 'Ultimo modello di punta ad altissima capacità.' : 'Latest flagship model with top capability.'}</li>
+                      </ul>
+                      <p className="mt-2">
                         <strong>{lang === 'it' ? 'Gemini Gems (Profili AI):' : 'Gemini Gems (AI Profiles):'}</strong><br />
                         {lang === 'it'
                           ? 'Configura istruzioni di sistema (System Prompts) dalle Impostazioni per alterare il comportamento dell\'IA. Quando attivi un profilo dalla tendina in alto, questo funge da direttiva prioritaria.'
@@ -3154,7 +3179,8 @@ export default function App() {
                         <strong>{lang === 'it' ? 'Comandi AI Rapidi:' : 'Quick AI Commands:'}</strong>
                       </p>
                       <ul className="space-y-1 list-disc pl-4">
-                        <li><code>:ai &lt;prompt&gt;</code> {lang === 'it' ? 'Applica istruzione al testo' : 'Apply instruction to text'}</li>
+                        <li><code>:ai &lt;prompt&gt;</code> / <code>:gem &lt;prompt&gt;</code> {lang === 'it' ? 'Applica istruzione al testo' : 'Apply instruction to text'}</li>
+                        <li><code>:gem model argon|pro|flash</code> {lang === 'it' ? 'Cambia modello AI attivo' : 'Switch active AI model'}</li>
                         <li><code>:tr &lt;lang&gt;</code> {lang === 'it' ? 'Traduci (es. :tr it)' : 'Translate (e.g. :tr it)'}</li>
                         <li><code>:lat &lt;tema&gt;</code> {lang === 'it' ? 'Testo segnaposto (es. standard)' : 'Placeholder (e.g. standard)'}</li>
                       </ul>

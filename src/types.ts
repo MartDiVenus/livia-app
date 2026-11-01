@@ -145,8 +145,9 @@ Google Gemini™ AI Commands & AI Models:
 - :gem <instructions>: Process document or visual selection with Google Gemini™ AI
                        (e.g., :gem summarize in 3 points, :gem proofread grammar,
                        :gem optimize this code)
-- :gem model flash   : Set Gemini™ Flash model (Fast, free tier)
-- :gem model pro     : Set Gemini™ Pro model (Advanced reasoning for complex tasks)
+- :gem model flash   : Set Gemini™ 3.8 Flash model (Fast, free tier)
+- :gem model pro     : Set Gemini™ 3.1 Pro model (Advanced reasoning for complex tasks)
+- :gem model argon   : Set Gemini™ 4 Argon model (Latest flagship model: gemini-4-argon)
 - :gem which model   : Show the currently active Gemini™ model
 
 * Personal API Key on Google AI Studio™ (aistudio.google.com/app/apikey):
@@ -577,8 +578,9 @@ Google Gemini™ AI & Modelli IA:
 - :gem <istruzioni>  : Elabora il documento o la selezione con Google Gemini™ AI
                        (es: :gem riassumi in 3 punti, :gem correggi grammatica,
                        :gem ottimizza questo codice)
-- :gem model flash   : Imposta modello Gemini™ Flash (Veloce, tier gratuito)
-- :gem model pro     : Imposta modello Gemini™ Pro (Ragionamento avanzato)
+- :gem model flash   : Imposta modello Gemini™ 3.8 Flash (Veloce, tier gratuito)
+- :gem model pro     : Imposta modello Gemini™ 3.1 Pro (Ragionamento avanzato)
+- :gem model argon   : Imposta l'ultimo modello Gemini™ 4 Argon (gemini-4-argon, Top)
 - :gem which model   : Mostra il modello Gemini™ attualmente in uso
 
 * API Key Personale Google AI Studio™ (aistudio.google.com/app/apikey):
@@ -2254,7 +2256,7 @@ set syntax=on
 # Line width for 'gq' reformatting (set textwidth=80 or set tw=80)
 set textwidth=80
 
-# Google AI Gemini Model (gem model flash / gem model pro)
+# Google AI Gemini Model (gem model flash / gem model pro / gem model argon)
 gem model flash
 
 # Code Folding for grouping sections (set folding=on / set folding=off)
@@ -2289,7 +2291,7 @@ set syntax=on
 # Larghezza riga per riformattazione 'gq' (set textwidth=80 o set tw=80)
 set textwidth=80
 
-# Modello Google AI Gemini (gem model flash / gem model pro)
+# Modello Google AI Gemini (gem model flash / gem model pro / gem model argon)
 gem model flash
 
 # Code Folding per raggruppare sezioni (set folding=on / set folding=off)
@@ -2311,21 +2313,29 @@ set lang=it
 export const HELP_AI_TEMPLATE: FileData = {
   name: "help_ai.md",
   format: "md",
-  content: `# Guida Gemini Gems & Profili AI in LiViA
+  content: `# Guida Gemini AI, Modelli (4.0 Argon / 3.8 Flash / 3.1 Pro) & Profili in LiViA
 
-LiViA integra profondamente i modelli Google Gemini per aiutarti a scrivere, tradurre e modificare il testo.
+LiViA integra profondamente i modelli Google Gemini di ultima generazione per aiutarti a scrivere, tradurre, programmare e modificare il testo.
 
-## 1. Comandi Rapidi Vim (AI)
+## 1. Modelli Google Gemini Supportati
+Puoi cambiare modello in qualsiasi momento dal selettore nella barra in alto, dalla finestra Assistente IA, dal pulsante nella barra di stato in basso, dalle Impostazioni o tramite comando Vim:
+- **⚡ Gemini 3.8 Flash (\`gemini-3.8-flash\`)**: Veloce, reattivo e ottimizzato per il Free Tier (\`:gem model flash\`).
+- **🧠 Gemini 3.1 Pro (\`gemini-3.1-pro-preview\`)**: Ragionamento avanzato per analisi approfondite (\`:gem model pro\`).
+- **🔥 Gemini 4 Argon (\`gemini-4-argon\`)**: L'ultimo modello di punta di nuova generazione per compiti complessi, codice e scrittura creativa (\`:gem model argon\`).
+
+## 2. Comandi Rapidi Vim (AI)
 In modalità comando (premi Esc), puoi usare:
-- \`:ai <prompt>\` -> Analizza tutto il documento usando il prompt (es. \`:ai riassumi il testo\`).
+- \`:ai <prompt>\` o \`:gem <prompt>\` -> Analizza o elabora il documento usando il prompt (es. \`:ai riassumi il testo\`).
+- \`:gem model argon|pro|flash\` -> Cambia il modello AI predefinito.
+- \`:gem which model\` -> Mostra il modello attualmente attivo.
 - \`:tr <lingua>\` -> Traduce l'intero documento o la selezione (es. \`:tr en\`, \`:tr it\`).
-- \`:lat <tema>\` -> Genera testo segnaposto (es. \`:lat standard\`, \`:lat tech\`).
+- \`:lat <tema>\` -> Genera una citazione latina con traduzione o testo segnaposto (es. \`:lat standard\`, \`:lat tempo\`).
 
 Se selezioni del testo (Visual mode), questi comandi agiranno **solo sulla selezione**.
 
 💡 **Suggerimento:** Poiché l'IA sostituisce o elabora il testo nell'editor, per chiudere o scartare la schermata di responso di Gemini tornando al testo originale ti basterà premere il tasto **\`u\`** (undo/annulla) in modalità normale.
 
-## 2. Gemini Gems (System Prompts)
+## 3. Gemini Gems (System Prompts)
 Puoi configurare profili AI (System Prompts) nelle Impostazioni.
 I profili AI fungono da "Direttive Superiori" per il modello Gemini.
 Quando selezioni un profilo dal menu a tendina sopra l'editor, l'istruzione di sistema viene iniettata automaticamente in tutte le chiamate AI successive, alterando in modo persistente il comportamento, il tono e le restrizioni del modello.
@@ -2335,21 +2345,29 @@ Quando selezioni un profilo dal menu a tendina sopra l'editor, l'istruzione di s
 export const HELP_AI_TEMPLATE_EN: FileData = {
   name: "help_ai.md",
   format: "md",
-  content: `# Guide to Gemini Gems & AI Profiles in LiViA
+  content: `# Guide to Gemini AI, Models (4.0 Argon / 3.8 Flash / 3.1 Pro) & Profiles in LiViA
 
-LiViA deeply integrates Google Gemini models to help you write, translate, and edit text.
+LiViA deeply integrates latest-generation Google Gemini models to help you write, translate, code, and edit text.
 
-## 1. Quick Vim Commands (AI)
+## 1. Supported Google Gemini Models
+You can switch models anytime from the top bar selector, the AI Assistant modal, the bottom status bar toggle, Settings, or via Vim command:
+- **⚡ Gemini 3.8 Flash (\`gemini-3.8-flash\`)**: Fast, responsive, and optimized for the Free Tier (\`:gem model flash\`).
+- **🧠 Gemini 3.1 Pro (\`gemini-3.1-pro-preview\`)**: Advanced reasoning for in-depth analysis (\`:gem model pro\`).
+- **🔥 Gemini 4 Argon (\`gemini-4-argon\`)**: Latest flagship next-generation model for complex tasks, coding, and writing (\`:gem model argon\`).
+
+## 2. Quick Vim Commands (AI)
 In command mode (press Esc), you can use:
-- \`:ai <prompt>\` -> Analyzes the whole document using the prompt (e.g. \`:ai summarize this text\`).
+- \`:ai <prompt>\` or \`:gem <prompt>\` -> Analyzes or processes the document using the prompt (e.g. \`:ai summarize this text\`).
+- \`:gem model argon|pro|flash\` -> Switches the active AI model.
+- \`:gem which model\` -> Displays the currently active model.
 - \`:tr <language>\` -> Translates the entire document or selection (e.g. \`:tr en\`, \`:tr it\`).
-- \`:lat <theme>\` -> Generates placeholder text (e.g. \`:lat standard\`, \`:lat tech\`).
+- \`:lat <theme>\` -> Generates a Latin quote with translation or placeholder text (e.g. \`:lat standard\`, \`:lat time\`).
 
 If you select text (Visual mode), these commands will act **only on the selection**.
 
 💡 **Tip:** Since the AI replaces or processes text in the editor, to close or discard the Gemini response and revert to your original text, simply press **\`u\`** (undo) in normal mode.
 
-## 2. Gemini Gems (System Prompts)
+## 3. Gemini Gems (System Prompts)
 You can configure AI Profiles (System Prompts) in the Settings.
 AI profiles act as "Higher Directives" for the Gemini model.
 When you select a profile from the dropdown above the editor, the system instruction is automatically injected into all subsequent AI calls, persistently altering the model's behavior, tone, and restrictions.

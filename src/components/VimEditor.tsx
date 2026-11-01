@@ -241,7 +241,7 @@ export function VimEditor({
     action: 'prompt' | 'translate' | 'latin',
     arg: string,
     targetMode: 'selection' | 'document' | 'cursor',
-    modelTier?: 'flash' | 'flash-lite' | 'pro'
+    modelTier?: 'flash' | 'pro' | 'argon'
   ) => {
     const view = editorRef.current?.view;
     if (!view) throw new Error(lang === 'it' ? "Editor non pronto." : "Editor not ready.");
@@ -266,7 +266,7 @@ export function VimEditor({
     }
 
     let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-    if (storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
+    if (storedTier === 'flash-lite' || storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
       storedTier = 'flash';
       if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
     }
@@ -1925,24 +1925,25 @@ export function VimEditor({
             e.preventDefault();
             e.stopPropagation();
             const current = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-            const next = current === 'flash' ? 'flash-lite' : current === 'flash-lite' ? 'pro' : 'flash';
+            const next = current === 'flash' ? 'pro' : current === 'pro' ? 'argon' : 'flash';
             if (typeof window !== 'undefined') {
               localStorage.setItem('livia_gemini_model', next);
+              window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: next } }));
             }
             setStatusMessage(lang === 'it' 
-              ? `Modello IA: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}` 
-              : `AI Model: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'flash-lite' ? 'Gemini 3.1 Flash-Lite' : 'Gemini 3.1 Pro'}`);
+              ? `Modello IA: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'pro' ? 'Gemini 3.1 Pro' : 'Gemini 4 Argon'}` 
+              : `AI Model: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'pro' ? 'Gemini 3.1 Pro' : 'Gemini 4 Argon'}`);
           }}
           className="px-1.5 py-0.5 my-auto mx-1 bg-white/20 hover:bg-white/30 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/80 text-white dark:text-emerald-300 rounded text-[9px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all border border-white/30 dark:border-emerald-700/50 shadow-xs"
-          title={lang === 'it' ? 'Modello Gemini attivo. Clicca per alternare (Flash / Flash-Lite / Pro)' : 'Active Gemini Model. Click to cycle (Flash / Flash-Lite / Pro)'}
+          title={lang === 'it' ? 'Modello Gemini attivo. Clicca per alternare (3.8 Flash / 3.1 Pro / 4.0 Argon)' : 'Active Gemini Model. Click to cycle (3.8 Flash / 3.1 Pro / 4.0 Argon)'}
           id="footer-gemini-model-btn"
         >
           <Sparkles size={10} className="text-amber-300 shrink-0" />
           <span>
-            {typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'pro' 
+            {typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'argon' 
+              ? '4.0 ARGON' 
+              : typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'pro' 
               ? '3.1 PRO' 
-              : typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'flash-lite' 
-              ? '3.1 LITE' 
               : '3.8 FLASH'}
           </span>
         </button>

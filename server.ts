@@ -24,20 +24,20 @@ async function startServer() {
     const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey, systemInstruction } = req.body;
 
     async function generateWithModelFallback(contents: string, sysInst?: string, configOverrides: any = {}): Promise<any> {
-      // Clean up tier if it points to deprecated 2.5, 2.0, 1.5, or invalid 3.7
-      let tier = (modelTier || 'flash').trim();
-      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7')) {
+      // Clean up tier if it points to deprecated 2.5, 2.0, 1.5, 3.7, or legacy flash-lite
+      let tier = (modelTier || 'flash').trim().toLowerCase();
+      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7') || tier === 'flash-lite') {
         tier = 'flash';
       }
 
-      // Valid models in current @google/genai SDK (per system guidelines)
-      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
-      if (tier === 'flash-lite') {
-        modelsToTry = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"];
+      // Valid models in current @google/genai SDK
+      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-flash-latest"];
+      if (tier === 'argon' || tier === 'gemini-4-argon' || tier === '4-argon') {
+        modelsToTry = ["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-flash-latest"];
       } else if (tier === 'pro' || tier === 'pro-thinking') {
-        modelsToTry = ["gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+        modelsToTry = ["gemini-3.1-pro-preview", "gemini-4-argon", "gemini-3.8-flash", "gemini-flash-latest"];
       } else if (tier.startsWith('gemini-')) {
-        modelsToTry = [tier, "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+        modelsToTry = [tier, "gemini-3.8-flash", "gemini-flash-latest"];
       }
       
       const clientsToTry: { client: any; isCustom: boolean }[] = [];
@@ -138,7 +138,7 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
         }
       } else if (errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("prepayment credits") || errMsg.includes("Quota") || errMsg.includes("quota")) {
         if (userApiKey && userApiKey.trim() !== "") {
-          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o passa a un modello più leggero (es. Flash o Flash-Lite).";
+          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o passa al modello 3.8 Flash.";
         } else {
           errMsg = "Quota Gemini API esaurita per la chiave di sistema condivisa. Inserisci la tua API Key personale nelle Impostazioni dell'editor (icona ingranaggio) per procedere senza limiti.";
         }
@@ -172,7 +172,7 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
     try {
       const apiKeyToTest = hasCustomKey ? userApiKey : process.env.GEMINI_API_KEY;
       const client = new GoogleGenAI({ apiKey: apiKeyToTest! });
-      const testModels = ["gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"];
+      const testModels = ["gemini-3.8-flash", "gemini-4-argon", "gemini-flash-latest"];
       let activeModel = "gemini-3.8-flash";
       let succeeded = false;
       let lastErr: any = null;

@@ -16,13 +16,13 @@ export interface AiAssistantModalProps {
   onSelectProfile: (id: string | null) => void;
   onOpenSettingsModal?: () => void;
   onOpenAiProfilesModal?: () => void;
-  selectedModel?: 'flash' | 'flash-lite' | 'pro';
-  onSelectModel?: (model: 'flash' | 'flash-lite' | 'pro') => void;
+  selectedModel?: 'flash' | 'pro' | 'argon';
+  onSelectModel?: (model: 'flash' | 'pro' | 'argon') => void;
   onExecute: (
     action: 'prompt' | 'translate' | 'latin',
     arg: string,
     targetMode: 'selection' | 'document' | 'cursor',
-    modelTier?: 'flash' | 'flash-lite' | 'pro'
+    modelTier?: 'flash' | 'pro' | 'argon'
   ) => Promise<boolean>;
 }
 
@@ -53,10 +53,10 @@ export function AiAssistantModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Local model state synchronized with localStorage
-  const [model, setModel] = useState<'flash' | 'flash-lite' | 'pro'>(() => {
+  const [model, setModel] = useState<'flash' | 'pro' | 'argon'>(() => {
     if (typeof window !== 'undefined') {
       const stored = localStorage.getItem('livia_gemini_model');
-      if (stored === 'flash-lite' || stored === 'pro') return stored;
+      if (stored === 'argon' || stored === 'pro') return stored;
     }
     return externalModel || 'flash';
   });
@@ -121,8 +121,11 @@ export function AiAssistantModal({
       setIsLoading(false);
       if (typeof window !== 'undefined') {
         const stored = localStorage.getItem('livia_gemini_model');
-        if (stored === 'flash-lite' || stored === 'pro' || stored === 'flash') {
+        if (stored === 'argon' || stored === 'pro' || stored === 'flash') {
           setModel(stored);
+        } else {
+          setModel('flash');
+          localStorage.setItem('livia_gemini_model', 'flash');
         }
         const key = localStorage.getItem('livia_custom_gemini_key');
         setHasCustomKey(!!(key && key.trim().length > 0));
@@ -135,10 +138,11 @@ export function AiAssistantModal({
     }
   }, [isOpen, hasSelection]);
 
-  const handleModelChange = (newModel: 'flash' | 'flash-lite' | 'pro') => {
+  const handleModelChange = (newModel: 'flash' | 'pro' | 'argon') => {
     setModel(newModel);
     if (typeof window !== 'undefined') {
       localStorage.setItem('livia_gemini_model', newModel);
+      window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: newModel } }));
     }
     if (onSelectModel) {
       onSelectModel(newModel);
@@ -377,29 +381,6 @@ export function AiAssistantModal({
 
             <button
               type="button"
-              onClick={() => handleModelChange('flash-lite')}
-              className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                model === 'flash-lite'
-                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-500 dark:border-amber-500/60 ring-1 ring-amber-500/30'
-                  : 'bg-white dark:bg-[#0E1116] border-gray-200 dark:border-[#2C313C] hover:bg-gray-100 dark:hover:bg-zinc-800/80'
-              }`}
-            >
-              <div className="flex items-center justify-between w-full">
-                <span className={`text-[11px] font-bold flex items-center gap-1 ${
-                  model === 'flash-lite' ? 'text-amber-700 dark:text-amber-300' : 'text-gray-800 dark:text-zinc-200'
-                }`}>
-                  <Zap size={11} className="text-amber-500 shrink-0" />
-                  <span>3.1 Flash-Lite</span>
-                </span>
-                {model === 'flash-lite' && <Check size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />}
-              </div>
-              <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
-                {lang === 'it' ? 'Ultrarapido (Bassa latenza)' : 'Ultra-fast (Low latency)'}
-              </span>
-            </button>
-
-            <button
-              type="button"
               onClick={() => handleModelChange('pro')}
               className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
                 model === 'pro'
@@ -418,6 +399,29 @@ export function AiAssistantModal({
               </div>
               <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
                 {lang === 'it' ? 'Ragionamento avanzato' : 'Advanced reasoning'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleModelChange('argon')}
+              className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                model === 'argon'
+                  ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-500 dark:border-amber-500/60 ring-1 ring-amber-500/30'
+                  : 'bg-white dark:bg-[#0E1116] border-gray-200 dark:border-[#2C313C] hover:bg-gray-100 dark:hover:bg-zinc-800/80'
+              }`}
+            >
+              <div className="flex items-center justify-between w-full">
+                <span className={`text-[11px] font-bold flex items-center gap-1 ${
+                  model === 'argon' ? 'text-amber-700 dark:text-amber-300' : 'text-gray-800 dark:text-zinc-200'
+                }`}>
+                  <Zap size={11} className="text-amber-500 shrink-0" />
+                  <span>4.0 Argon</span>
+                </span>
+                {model === 'argon' && <Check size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />}
+              </div>
+              <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
+                {lang === 'it' ? 'Top / Ultimo Modello' : 'Top / Latest (Argon)'}
               </span>
             </button>
           </div>
@@ -780,8 +784,8 @@ export function AiAssistantModal({
               <span>💡</span>
               <span>
                 {lang === 'it'
-                  ? 'Comandi Vim: :ai [testo], :tr [lingua], :lat [tema], :gem model [flash|lite|pro]'
-                  : 'Vim commands: :ai [text], :tr [lang], :lat [theme], :gem model [flash|lite|pro]'}
+                  ? 'Comandi Vim: :ai [testo], :tr [lingua], :lat [tema], :gem model [flash|pro|argon]'
+                  : 'Vim commands: :ai [text], :tr [lang], :lat [theme], :gem model [flash|pro|argon]'}
               </span>
             </div>
             {onOpenAiProfilesModal && (

@@ -137,9 +137,9 @@ export function registerVimCommands(ctx: VimCommandsContext) {
 
   const showModelInfo = () => {
     const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
-    let modelLabel = 'Gemini Flash (gemini-3.8 / latest)';
-    if (currentModel === 'flash-lite') modelLabel = 'Gemini Flash-Lite (3.1)';
-    else if (currentModel === 'pro') modelLabel = 'Gemini Pro (3.1 Pro)';
+    let modelLabel = 'Gemini 3.8 Flash (gemini-3.8-flash)';
+    if (currentModel === 'argon' || currentModel === 'gemini-4-argon') modelLabel = 'Gemini 4 Argon (gemini-4-argon)';
+    else if (currentModel === 'pro') modelLabel = 'Gemini 3.1 Pro (gemini-3.1-pro-preview)';
     else if (currentModel === 'pro-thinking') modelLabel = lang === 'it' ? 'Pro Esteso (Ragionamento)' : 'Pro Extended (Reasoning)';
     showFlashMessage(lang === 'it' ? `Modello AI in uso: ${modelLabel}` : `Current AI Model: ${modelLabel}`);
   };
@@ -183,17 +183,26 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   Vim.defineEx('set', 'set', (cm: any, params: any) => {
     const param = params?.argString?.trim();
     if (!param) return;
-    if (param.includes('model=flash-lite')) {
-       if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash-lite');
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini Flash-Lite (3.1).' : '✓ Model set to Gemini Flash-Lite (3.1).');
+    if (param.includes('model=argon') || param.includes('model=gemini-4-argon') || param.includes('model=4-argon')) {
+       if (typeof window !== 'undefined') {
+         localStorage.setItem('livia_gemini_model', 'argon');
+         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'argon' } }));
+       }
+       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 4 Argon (gemini-4-argon).' : '✓ Model set to Gemini 4 Argon (gemini-4-argon).');
     } else if (param.includes('model=flash')) {
-       if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini Flash (gemini-3.8 / latest).' : '✓ Model set to Gemini Flash (gemini-3.8 / latest).');
+       if (typeof window !== 'undefined') {
+         localStorage.setItem('livia_gemini_model', 'flash');
+         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'flash' } }));
+       }
+       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.8 Flash (gemini-3.8-flash).' : '✓ Model set to Gemini 3.8 Flash (gemini-3.8-flash).');
     } else if (param.includes('model=pro-thinking')) {
        if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
        showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended (Reasoning).');
     } else if (param.includes('model=pro')) {
-       if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro');
+       if (typeof window !== 'undefined') {
+         localStorage.setItem('livia_gemini_model', 'pro');
+         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'pro' } }));
+       }
        showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.1 Pro.' : '✓ Model set to Gemini 3.1 Pro.');
     } else if (param.includes('lang=it')) {
        if (setLang) setLang('it');
@@ -367,6 +376,36 @@ export function registerVimCommands(ctx: VimCommandsContext) {
     }
     if (arg.startsWith('ini ')) {
        arg = arg.substring(4).trim();
+    }
+    const lowerArg = arg.toLowerCase();
+    if (lowerArg === 'which model' || lowerArg === 'model' || lowerArg === 'model?') {
+      showModelInfo();
+      return;
+    }
+    if (lowerArg.startsWith('model ') || lowerArg.startsWith('model=')) {
+      const mVal = lowerArg.replace(/^model[\s=]+/, '').trim();
+      if (mVal.includes('argon') || mVal === '4' || mVal === '4.0') {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('livia_gemini_model', 'argon');
+          window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'argon' } }));
+        }
+        showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 4 Argon (gemini-4-argon).' : '✓ Model set to Gemini 4 Argon (gemini-4-argon).');
+        return;
+      } else if (mVal.includes('pro')) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('livia_gemini_model', 'pro');
+          window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'pro' } }));
+        }
+        showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.1 Pro.' : '✓ Model set to Gemini 3.1 Pro.');
+        return;
+      } else if (mVal.includes('flash')) {
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('livia_gemini_model', 'flash');
+          window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'flash' } }));
+        }
+        showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.8 Flash (gemini-3.8-flash).' : '✓ Model set to Gemini 3.8 Flash (gemini-3.8-flash).');
+        return;
+      }
     }
     handleAiCommand('prompt', cm, arg);
   });
