@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } from 'react';
 import { Toolbar } from './components/Toolbar';
 import { VimEditor } from './components/VimEditor';
 import { GoogleDocsModal } from './components/GoogleDocsModal';
@@ -186,6 +186,7 @@ import {
   writePosixFile,
   getActivePosixInfoForFilename,
   hasAnyPosixAuthorization,
+  warmUpPosixHandlesCache,
 } from './utils/posixFileSystem';
 import { MarkdownPreview } from './components/MarkdownPreview';
 import { TableOfContents } from './components/TableOfContents';
@@ -428,27 +429,43 @@ export default function App() {
     });
   }, [lang]);
 
-  // If current active file is help.txt or a template that had example.txt content, heal active editor content
+  // If current active file is help.txt that had example.txt content, heal active editor content
   useEffect(() => {
+    if (filename !== 'help.txt') return;
     const exampleIt = getTemplates('it')['txt'].content;
     const exampleEn = getTemplates('en')['txt'].content;
-    if (filename === 'help.txt' && (content === exampleIt || content === exampleEn)) {
+    if (content === exampleIt || content === exampleEn) {
       setContent(getHelpTemplate(lang).content);
       setFileSessionId(prev => prev + 1);
     }
   }, [filename, content, lang]);
 
+  // Debounced localStorage persistence (never blocks keystrokes on 66 KB+ documents)
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('livia_editor_content', content);
-      localStorage.setItem('livia_editor_filename', filename);
-      localStorage.setItem('livia_virtual_files', JSON.stringify(virtualFiles));
-    }
-  }, [content, filename, virtualFiles]);
+    if (typeof window === 'undefined') return;
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem('livia_editor_content', content);
+        localStorage.setItem('livia_editor_filename', filename);
+      } catch {}
+    }, 650);
+    return () => clearTimeout(timer);
+  }, [content, filename]);
 
-  // Self-heal stale/deprecated AI model settings in localStorage (e.g. from older mobile sessions)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem('livia_virtual_files', JSON.stringify(virtualFiles));
+      } catch {}
+    }, 850);
+    return () => clearTimeout(timer);
+  }, [virtualFiles]);
+
+  // Self-heal stale/deprecated AI model settings in localStorage and pre-warm POSIX IndexedDB handles
   useEffect(() => {
     if (typeof window !== 'undefined') {
+      warmUpPosixHandlesCache().catch(() => {});
       const savedModel = localStorage.getItem('livia_gemini_model');
       if (savedModel && (savedModel === 'flash-lite' || savedModel.includes('2.5') || savedModel.includes('2.0') || savedModel.includes('1.5') || savedModel.includes('3.7'))) {
         localStorage.setItem('livia_gemini_model', 'flash');
@@ -1267,10 +1284,23 @@ export default function App() {
     }
   };
 
-  // Active cursor line (1-based) synchronized with VimEditor and Outline panel
+  // Active cursor line (1-based) synchronized with VimEditor ONLY when Outline panel is visible
   const [activeCursorLine, setActiveCursorLine] = useState<number>(1);
+  const isOutlineVisible = showCheatsheet && sidebarTab === 'outline';
+  const isOutlineVisibleRef = useRef(isOutlineVisible);
+  isOutlineVisibleRef.current = isOutlineVisible;
 
-  const outlineElements = useMemo(() => parseOutline(content, format), [content, format]);
+  const handleEditorCursorChange = useCallback((line: number) => {
+    if (isOutlineVisibleRef.current) {
+      setActiveCursorLine(line);
+    }
+  }, []);
+
+  const deferredOutlineContent = useDeferredValue(content);
+  const outlineElements = useMemo(() => {
+    if (!isOutlineVisible) return [];
+    return parseOutline(deferredOutlineContent, format);
+  }, [isOutlineVisible, deferredOutlineContent, format]);
 
   const activeOutlineElement = useMemo(() => {
     if (!outlineElements.length) return null;
@@ -1285,6 +1315,20 @@ export default function App() {
     }
     return current;
   }, [outlineElements, activeCursorLine]);
+
+  // Debounced sync of active editor content back into virtualFiles buffer list
+  const virtualFileSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleEditorContentChange = useCallback((val: string) => {
+    setContent(val);
+    if (virtualFileSyncTimerRef.current) clearTimeout(virtualFileSyncTimerRef.current);
+    const targetName = filename;
+    virtualFileSyncTimerRef.current = setTimeout(() => {
+      setVirtualFiles(prev => prev.map(f => f.name === targetName ? { ...f, content: val } : f));
+    }, 450);
+    if (targetName === '.lvarc') {
+      reloadLvarc(val);
+    }
+  }, [filename]);
 
   useEffect(() => {
     if (sidebarTab !== 'outline' || !showCheatsheet || !activeOutlineElement) return;
@@ -1535,7 +1579,11 @@ export default function App() {
       setFileSessionId(prev => prev + 1);
       showToast(
         lang === 'it'
-          ? `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+          ? resolved.mountedDirName
+            ? `Aperto "${resolved.filename}" (${resolved.posixPath}) — cartella madre "${resolved.mountedDirName}" attiva.`
+            : `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+          : resolved.mountedDirName
+          ? `Opened "${resolved.filename}" (${resolved.posixPath}) — parent folder "${resolved.mountedDirName}" active.`
           : `Opened "${resolved.filename}" from POSIX path (${resolved.posixPath}).`,
         'success'
       );
@@ -1786,14 +1834,7 @@ export default function App() {
                     <VimEditor
 
             content={content}
-            setContent={(val) => {
-              setContent(val);
-              // Save state automatically to the current active file buffer in background
-              setVirtualFiles(prev => prev.map(f => f.name === filename ? { ...f, content: val } : f));
-              if (filename === '.lvarc') {
-                reloadLvarc(val);
-              }
-            }}
+            setContent={handleEditorContentChange}
             format={format}
             filename={filename}
             fileSessionId={fileSessionId}
@@ -1807,7 +1848,7 @@ export default function App() {
             setEditorFontSize={setEditorFontSize}
             syntaxHighlightOn={syntaxHighlightOn}
             setSyntaxHighlightOn={setSyntaxHighlightOn}
-            onCursorChange={(line) => setActiveCursorLine(line)}
+            onCursorChange={handleEditorCursorChange}
             onSaveFileState={async (rawName, fileContent) => {
               const cleanName = rawName.replace(/^["']|["']$/g, '').trim();
               const explicitDriveId = extractDriveFileId(cleanName);
@@ -1927,16 +1968,32 @@ export default function App() {
                 const resolved = await resolveAndReadPosixFile(cleanName, { autoPromptFilePicker: pathLike });
                 return resolved.content;
               } catch (err: any) {
+                if (err?.code === 'PERMISSION_REAUTH_NEEDED') {
+                  setInitialPosixModalPath(cleanName);
+                  setInitialPosixModalAction('read');
+                  setIsPosixModalOpen(true);
+                  showToast(
+                    lang === 'it'
+                      ? `Clicca su "Riattiva accesso" per sbloccare "${err.mountName || 'la cartella'}" (1 clic, senza file browser).`
+                      : `Click "Re-enable access" to unlock "${err.mountName || 'folder'}" (1 click, no file browser).`,
+                    'info'
+                  );
+                  return null;
+                }
                 if (err?.code === 'NO_ROOT_AUTHORIZED' && pathLike) {
                   setInitialPosixModalPath(cleanName);
                   setInitialPosixModalAction('read');
                   setIsPosixModalOpen(true);
                   showToast(
                     lang === 'it'
-                      ? 'Seleziona il file o autorizza la sottocartella per leggere questo percorso POSIX.'
-                      : 'Select the file or authorize the subfolder to read this POSIX path.',
+                      ? 'Conferma il montaggio della cartella madre (o selezione file in $HOME) per leggere questo percorso POSIX.'
+                      : 'Confirm mounting the parent folder (or selecting files in $HOME) to read this POSIX path.',
                     'info'
                   );
+                  return null;
+                }
+                if (pathLike) {
+                  showToast(err?.message || (lang === 'it' ? `File POSIX non trovato: ${cleanName}` : `POSIX file not found: ${cleanName}`), 'error');
                   return null;
                 }
                 const fallbackFile = virtualFiles.find(f => f.name.toLowerCase() === cleanName.toLowerCase() || f.name.toLowerCase() === baseName.toLowerCase());
@@ -1998,11 +2055,12 @@ export default function App() {
                   const resolved = await resolveAndReadPosixFile(cleanTarget, { autoPromptFilePicker: true });
                   return { found: true, name: resolved.filename, content: resolved.content };
                 } catch (err: any) {
-                  if (err?.code === 'NO_ROOT_AUTHORIZED') {
+                  if (err?.code === 'PERMISSION_REAUTH_NEEDED' || err?.code === 'NO_ROOT_AUTHORIZED') {
                     setInitialPosixModalPath(cleanTarget);
                     setInitialPosixModalAction('tear');
                     setIsPosixModalOpen(true);
                   }
+                  return { found: false, name: cleanTarget };
                 }
               }
               
@@ -2120,12 +2178,28 @@ export default function App() {
                   setFileSessionId(prev => prev + 1);
                   showToast(
                     lang === 'it'
-                      ? `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+                      ? resolved.mountedDirName
+                        ? `Aperto "${resolved.filename}" (${resolved.posixPath}) — cartella madre "${resolved.mountedDirName}" attiva.`
+                        : `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+                      : resolved.mountedDirName
+                      ? `Opened "${resolved.filename}" (${resolved.posixPath}) — parent folder "${resolved.mountedDirName}" active.`
                       : `Opened "${resolved.filename}" from POSIX path (${resolved.posixPath}).`,
                     'info'
                   );
                   return { found: true, name: resolved.filename };
                 } catch (err: any) {
+                  if (err?.code === 'PERMISSION_REAUTH_NEEDED') {
+                    setInitialPosixModalPath(cleanTarget);
+                    setInitialPosixModalAction('open');
+                    setIsPosixModalOpen(true);
+                    showToast(
+                      lang === 'it'
+                        ? `Clicca su "Riattiva accesso" per sbloccare "${err.mountName || 'la cartella'}" (1 clic, senza file browser).`
+                        : `Click "Re-enable access" to unlock "${err.mountName || 'folder'}" (1 click, no file browser).`,
+                      'info'
+                    );
+                    return { found: false, name: baseName };
+                  }
                   if (pathLike) {
                     if (err?.code === 'NO_ROOT_AUTHORIZED') {
                       setInitialPosixModalPath(cleanTarget);
@@ -2133,8 +2207,8 @@ export default function App() {
                       setIsPosixModalOpen(true);
                       showToast(
                         lang === 'it'
-                          ? 'Seleziona il file in $HOME o autorizza la sottocartella per aprire questo percorso POSIX.'
-                          : 'Select the file in $HOME or authorize the subfolder to open this POSIX path.',
+                          ? 'Conferma il montaggio della cartella madre nella finestra POSIX per sbloccare tutti i suoi file.'
+                          : 'Confirm mounting the parent folder in the POSIX window to unlock all its files.',
                         'info'
                       );
                       return { found: false, name: baseName };

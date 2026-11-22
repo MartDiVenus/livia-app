@@ -25,54 +25,50 @@ export interface VimCommandsContext {
   insertBelowCursor?: (text: string) => void;
 }
 
-export function registerVimCommands(ctx: VimCommandsContext) {
-  const {
-    lang,
-    filename,
-    content,
-    onSaveFileState,
-    onReadFileState,
-    onOpenFileState,
-    onTearFileState,
-    onCloseFileState,
-    onShowHelp,
-    onAiCommand,
-    setLang,
-    showFlashMessage,
-    setShowLineNumbers,
-    onOpenAiAssistant,
-    insertBelowCursor
-  } = ctx;
+let _liviaCoreMappingsRegistered = false;
 
-  Vim.mapCommand('zc', 'action', 'fold', {}, {});
-  Vim.mapCommand('zo', 'action', 'unfold', {}, {});
-  
+export function registerVimCommands(ctxOrGetter: VimCommandsContext | (() => VimCommandsContext)) {
+  const getCtx: () => VimCommandsContext =
+    typeof ctxOrGetter === 'function' ? ctxOrGetter : () => ctxOrGetter;
+
+  if (!_liviaCoreMappingsRegistered) {
+    Vim.mapCommand('zc', 'action', 'fold', {}, {});
+    Vim.mapCommand('zo', 'action', 'unfold', {}, {});
+    Vim.map('ZZ', ':wq<CR>', 'normal');
+    _liviaCoreMappingsRegistered = true;
+  }
+
   Vim.defineEx('write', 'w', async (cm: any, params: any) => {
+    const { lang, filename, content, onSaveFileState, showFlashMessage } = getCtx();
     const rawTarget = params?.argString?.trim() || filename;
     const currentText = cm?.getValue ? cm.getValue() : content;
     await onSaveFileState(rawTarget, currentText);
     showFlashMessage(lang === 'it' ? `"${rawTarget}" salvato.` : `"${rawTarget}" written.`);
   });
-  
+
   Vim.defineEx('edit', 'e', async (cm: any, params: any) => {
+    const { lang, onOpenFileState, onSaveFileState, showFlashMessage } = getCtx();
     const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
     if (!rawTarget) {
-       showFlashMessage(lang === 'it' ? 'Specificare un nome file o percorso POSIX (es. :e /percorso/file.md).' : 'Specify a filename or POSIX path (e.g. :e /path/to/file.md).');
-       return;
+      showFlashMessage(
+        lang === 'it'
+          ? 'Specificare un nome file o percorso POSIX (es. :e /percorso/file.md).'
+          : 'Specify a filename or POSIX path (e.g. :e /path/to/file.md).'
+      );
+      return;
     }
     if (onOpenFileState) {
-       await onOpenFileState(rawTarget);
-       return;
+      await onOpenFileState(rawTarget);
+      return;
     }
-    if (typeof window !== 'undefined') {
-       if (onSaveFileState) {
-          await onSaveFileState(rawTarget, '');
-          showFlashMessage(lang === 'it' ? `Nuovo file "${rawTarget}"` : `New file "${rawTarget}"`);
-       }
+    if (typeof window !== 'undefined' && onSaveFileState) {
+      await onSaveFileState(rawTarget, '');
+      showFlashMessage(lang === 'it' ? `Nuovo file "${rawTarget}"` : `New file "${rawTarget}"`);
     }
   });
 
   Vim.defineEx('read', 'r', async (cm: any, params: any) => {
+    const { lang, onReadFileState, insertBelowCursor, showFlashMessage } = getCtx();
     const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
     if (!rawTarget) {
       showFlashMessage(
@@ -89,7 +85,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
           insertBelowCursor(readContent);
         } else if (cm?.replaceRange && cm?.getCursor) {
           const cur = cm.getCursor();
-          const lineText = cm.getLine ? (cm.getLine(cur.line) || '') : '';
+          const lineText = cm.getLine ? cm.getLine(cur.line) || '' : '';
           cm.replaceRange('\n' + readContent, { line: cur.line, ch: lineText.length });
         }
         showFlashMessage(
@@ -107,36 +103,37 @@ export function registerVimCommands(ctx: VimCommandsContext) {
     }
   });
 
-  Vim.defineEx('quit', 'q', (cm: any, params: any) => {
+  Vim.defineEx('quit', 'q', (_cm: any, params: any) => {
+    const { lang, onCloseFileState, showFlashMessage } = getCtx();
     const force = params?.argString?.trim() === '!';
     if (onCloseFileState) {
-       const res = onCloseFileState(force);
-       if (res && res.message) {
-          showFlashMessage(res.message);
-       } else {
-          showFlashMessage(lang === 'it' ? 'Ultimo file chiuso' : 'Last file closed');
-       }
+      const res = onCloseFileState(force);
+      if (res && res.message) {
+        showFlashMessage(res.message);
+      } else {
+        showFlashMessage(lang === 'it' ? 'Ultimo file chiuso' : 'Last file closed');
+      }
     }
   });
 
   Vim.defineEx('wq', 'wq', async (cm: any, params: any) => {
+    const { lang, filename, content, onSaveFileState, onCloseFileState, showFlashMessage } = getCtx();
     const rawTarget = params?.argString?.trim() || filename;
     const currentText = cm?.getValue ? cm.getValue() : content;
     await onSaveFileState(rawTarget, currentText);
     if (onCloseFileState) {
-       const res = onCloseFileState(true); 
-       if (res && res.message) {
-          showFlashMessage(res.message);
-       } else {
-          showFlashMessage(lang === 'it' ? 'Salvato e chiuso' : 'Saved and closed');
-       }
+      const res = onCloseFileState(true);
+      if (res && res.message) {
+        showFlashMessage(res.message);
+      } else {
+        showFlashMessage(lang === 'it' ? 'Salvato e chiuso' : 'Saved and closed');
+      }
     }
   });
 
-  Vim.map('ZZ', ':wq<CR>', 'normal');
-
   const showModelInfo = () => {
-    const currentModel = typeof window !== 'undefined' ? (localStorage.getItem('livia_gemini_model') || 'flash') : 'flash';
+    const { lang, showFlashMessage } = getCtx();
+    const currentModel = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
     let modelLabel = 'Gemini 3.8 Flash (gemini-3.8-flash)';
     if (currentModel === 'argon' || currentModel === 'gemini-4-argon') modelLabel = 'Gemini 4 Argon (gemini-4-argon)';
     else if (currentModel === 'pro') modelLabel = 'Gemini 3.1 Pro (gemini-3.1-pro-preview)';
@@ -147,17 +144,18 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   Vim.defineEx('model', 'model', showModelInfo);
   Vim.defineEx('tier', 'tier', showModelInfo);
 
-  const setLanguage = (cm: any, params: any) => {
+  const setLanguage = (_cm: any, params: any) => {
+    const { lang, setLang, showFlashMessage } = getCtx();
     const arg = params?.argString?.trim()?.replace('?', '');
     if (arg === 'it') {
-       if (setLang) setLang('it');
-       showFlashMessage('✓ Lingua impostata su Italiano (IT).');
+      if (setLang) setLang('it');
+      showFlashMessage('✓ Lingua impostata su Italiano (IT).');
     } else if (arg === 'en') {
-       if (setLang) setLang('en');
-       showFlashMessage('✓ Language set to English (EN).');
+      if (setLang) setLang('en');
+      showFlashMessage('✓ Language set to English (EN).');
     } else {
-       const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
-       showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
+      const currLangName = lang === 'it' ? 'Italiano (IT)' : 'English (EN)';
+      showFlashMessage(lang === 'it' ? `Lingua attiva: ${currLangName}` : `Active Language: ${currLangName}`);
     }
   };
 
@@ -165,115 +163,123 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   Vim.defineEx('language', 'language', setLanguage);
 
   const showCreditsInfo = () => {
+    const { lang, showFlashMessage } = getCtx();
     const customKey = typeof window !== 'undefined' ? localStorage.getItem('livia_custom_gemini_key') : null;
     if (customKey) {
-      showFlashMessage(lang === 'it' 
-        ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
-        : '✓ Personal API key active. Check exact usage & quotas on AI Studio.');
+      showFlashMessage(
+        lang === 'it'
+          ? '✓ Chiave API personale attiva. Controlla il consumo esatto su AI Studio.'
+          : '✓ Personal API key active. Check exact usage & quotas on AI Studio.'
+      );
     } else {
-      showFlashMessage(lang === 'it' 
-        ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
-        : '✓ You are using the shared platform Secret API key (Free tier).');
+      showFlashMessage(
+        lang === 'it'
+          ? '✓ Stai usando la chiave di sistema dei Secret della piattaforma (Gratuita).'
+          : '✓ You are using the shared platform Secret API key (Free tier).'
+      );
     }
   };
 
   Vim.defineEx('credits', 'credits', showCreditsInfo);
   Vim.defineEx('quota', 'quota', showCreditsInfo);
 
-  Vim.defineEx('set', 'set', (cm: any, params: any) => {
+  Vim.defineEx('set', 'set', (_cm: any, params: any) => {
+    const { lang, setLang, setShowLineNumbers, showFlashMessage } = getCtx();
     const param = params?.argString?.trim();
     if (!param) return;
     if (param.includes('model=argon') || param.includes('model=gemini-4-argon') || param.includes('model=4-argon')) {
-       if (typeof window !== 'undefined') {
-         localStorage.setItem('livia_gemini_model', 'argon');
-         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'argon' } }));
-       }
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 4 Argon (gemini-4-argon).' : '✓ Model set to Gemini 4 Argon (gemini-4-argon).');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('livia_gemini_model', 'argon');
+        window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'argon' } }));
+      }
+      showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 4 Argon (gemini-4-argon).' : '✓ Model set to Gemini 4 Argon (gemini-4-argon).');
     } else if (param.includes('model=flash')) {
-       if (typeof window !== 'undefined') {
-         localStorage.setItem('livia_gemini_model', 'flash');
-         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'flash' } }));
-       }
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.8 Flash (gemini-3.8-flash).' : '✓ Model set to Gemini 3.8 Flash (gemini-3.8-flash).');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('livia_gemini_model', 'flash');
+        window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'flash' } }));
+      }
+      showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.8 Flash (gemini-3.8-flash).' : '✓ Model set to Gemini 3.8 Flash (gemini-3.8-flash).');
     } else if (param.includes('model=pro-thinking')) {
-       if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended (Reasoning).');
+      if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'pro-thinking');
+      showFlashMessage(lang === 'it' ? '✓ Modello impostato su Pro Esteso (Ragionamento).' : '✓ Model set to Pro Extended (Reasoning).');
     } else if (param.includes('model=pro')) {
-       if (typeof window !== 'undefined') {
-         localStorage.setItem('livia_gemini_model', 'pro');
-         window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'pro' } }));
-       }
-       showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.1 Pro.' : '✓ Model set to Gemini 3.1 Pro.');
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('livia_gemini_model', 'pro');
+        window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: 'pro' } }));
+      }
+      showFlashMessage(lang === 'it' ? '✓ Modello impostato su Gemini 3.1 Pro.' : '✓ Model set to Gemini 3.1 Pro.');
     } else if (param.includes('lang=it')) {
-       if (setLang) setLang('it');
-       showFlashMessage('✓ Lingua impostata su Italiano (IT).');
+      if (setLang) setLang('it');
+      showFlashMessage('✓ Lingua impostata su Italiano (IT).');
     } else if (param.includes('lang=en')) {
-       if (setLang) setLang('en');
-       showFlashMessage('✓ Language set to English (EN).');
+      if (setLang) setLang('en');
+      showFlashMessage('✓ Language set to English (EN).');
     } else if (param === 'nu' || param === 'number') {
-       if (setShowLineNumbers) setShowLineNumbers(true);
-       showFlashMessage('✓ Line numbers enabled');
+      if (setShowLineNumbers) setShowLineNumbers(true);
+      showFlashMessage('✓ Line numbers enabled');
     } else if (param === 'nonu' || param === 'nonumber') {
-       if (setShowLineNumbers) setShowLineNumbers(false);
-       showFlashMessage('✓ Line numbers disabled');
+      if (setShowLineNumbers) setShowLineNumbers(false);
+      showFlashMessage('✓ Line numbers disabled');
     }
   });
 
-  Vim.defineEx('tear', 'tear', async (cm: any, params: any) => {
+  Vim.defineEx('tear', 'tear', async (_cm: any, params: any) => {
+    const { lang, onTearFileState, showFlashMessage } = getCtx();
     const rawTarget = params?.argString?.trim() || params?.args?.[0]?.trim() || '';
     if (!rawTarget) {
-       showFlashMessage(lang === 'it' ? 'Specificare un nome file o percorso POSIX.' : 'Specify a filename or POSIX path.');
-       return;
+      showFlashMessage(lang === 'it' ? 'Specificare un nome file o percorso POSIX.' : 'Specify a filename or POSIX path.');
+      return;
     }
     if (onTearFileState) {
-       const res = await onTearFileState(rawTarget);
-       if (res.found && res.content !== undefined) {
-          try {
-             await navigator.clipboard.writeText(res.content);
-             showFlashMessage(lang === 'it' ? `Contenuto di "${res.name}" copiato negli appunti.` : `Content of "${res.name}" copied to clipboard.`);
-          } catch {
-             showFlashMessage(lang === 'it' ? 'Errore durante la copia negli appunti.' : 'Error copying to clipboard.');
-          }
-       } else {
-          showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
-       }
-       return;
+      const res = await onTearFileState(rawTarget);
+      if (res.found && res.content !== undefined) {
+        try {
+          await navigator.clipboard.writeText(res.content);
+          showFlashMessage(lang === 'it' ? `Contenuto di "${res.name}" copiato negli appunti.` : `Content of "${res.name}" copied to clipboard.`);
+        } catch {
+          showFlashMessage(lang === 'it' ? 'Errore durante la copia negli appunti.' : 'Error copying to clipboard.');
+        }
+      } else {
+        showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
+      }
+      return;
     }
     if (typeof window !== 'undefined') {
-       const saved = localStorage.getItem('livia_files');
-       if (saved) {
-          try {
-             const files = JSON.parse(saved);
-             if (files[rawTarget] !== undefined) {
-                try {
-                   await navigator.clipboard.writeText(files[rawTarget]);
-                   showFlashMessage(lang === 'it' ? `Contenuto di "${rawTarget}" copiato.` : `Content of "${rawTarget}" copied.`);
-                } catch (e) {
-                   showFlashMessage(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.');
-                }
-                return;
-             }
-          } catch (e) {}
-       }
-       showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
+      const saved = localStorage.getItem('livia_files');
+      if (saved) {
+        try {
+          const files = JSON.parse(saved);
+          if (files[rawTarget] !== undefined) {
+            try {
+              await navigator.clipboard.writeText(files[rawTarget]);
+              showFlashMessage(lang === 'it' ? `Contenuto di "${rawTarget}" copiato.` : `Content of "${rawTarget}" copied.`);
+            } catch {
+              showFlashMessage(lang === 'it' ? 'Errore durante la copia.' : 'Error copying.');
+            }
+            return;
+          }
+        } catch {}
+      }
+      showFlashMessage(lang === 'it' ? `File "${rawTarget}" non trovato.` : `File "${rawTarget}" not found.`);
     }
   });
 
-  Vim.defineEx('help', 'h', (cm: any, params: any) => {
+  Vim.defineEx('help', 'h', (_cm: any, params: any) => {
+    const { onShowHelp } = getCtx();
     if (onShowHelp) onShowHelp(params?.args?.[0]);
   });
 
   const handleAiCommand = (type: 'prompt' | 'translate' | 'latin', cm: any, arg: string) => {
+    const { onAiCommand, showFlashMessage } = getCtx();
     if (onAiCommand) {
       let isSelection = cm.somethingSelected();
-      let textToProcess = "";
+      let textToProcess = '';
       let fromPos = cm.getCursor('start');
       let toPos = cm.getCursor('end');
 
       if (isSelection) {
         textToProcess = cm.getSelection();
       } else if (cm.state?.vim?.marks) {
-        // If visual mode was active before Ex command was invoked, Vim saves marks '<' and '>'
         try {
           const mStart = cm.state.vim.marks['<']?.find?.();
           const mEnd = cm.state.vim.marks['>']?.find?.();
@@ -298,73 +304,72 @@ export function registerVimCommands(ctx: VimCommandsContext) {
       if (!isSelection) {
         textToProcess = cm.getValue();
       }
-      
+
       let placeholderLength = 0;
-      let insertedPlaceholder = "";
+      let insertedPlaceholder = '';
 
       const onInsert = (newText: string, isUpdate?: boolean) => {
-         try {
-           const finalStr = newText || "";
-           
-           if (isUpdate) {
-               let replacedViaStringMatch = false;
-               if (cm.cm6 && insertedPlaceholder) {
-                   const view = cm.cm6;
-                   const docText = view.state.doc.toString();
-                   const idx = docText.indexOf(insertedPlaceholder);
-                   if (idx !== -1) {
-                       view.dispatch({
-                           changes: { from: idx, to: idx + insertedPlaceholder.length, insert: finalStr + (isSelection ? "" : "\n") }
-                       });
-                       replacedViaStringMatch = true;
-                   }
-               }
-               
-               if (!replacedViaStringMatch) {
-                   // Fallback to coordinates
-                   const pFrom = isSelection ? fromPos : toPos;
-                   const pTo = { line: pFrom.line, ch: pFrom.ch + placeholderLength };
-                   try {
-                       cm.replaceRange(finalStr + (isSelection ? "" : "\n"), pFrom, pTo);
-                   } catch (err: any) {
-                       console.error("Errore replaceRange:", err.message);
-                   }
-               }
-           } else {
-               insertedPlaceholder = finalStr;
-               // Initial insertion of placeholder
-               if (isSelection) {
-                 cm.replaceRange(finalStr, fromPos, toPos);
-               } else {
-                 cm.replaceRange(finalStr, toPos);
-               }
-               placeholderLength = finalStr.length;
-           }
-           
-           setTimeout(() => {
-             if (cm.cm6) {
-               const view = cm.cm6;
-               view.contentDOM.focus();
-               view.requestMeasure();
-               
-               const mainSel = view.state.selection.main;
-               if (mainSel) {
-                   view.dispatch({
-                       effects: EditorView.scrollIntoView(mainSel.head, { y: 'center' })
-                   });
-               }
-             }
-           }, 50);
-         } catch(e: any) {
-           console.error("Vim AI insert error", e);
-           showFlashMessage("Errore insert: " + e.message);
-         }
+        try {
+          const finalStr = newText || '';
+
+          if (isUpdate) {
+            let replacedViaStringMatch = false;
+            if (cm.cm6 && insertedPlaceholder) {
+              const view = cm.cm6;
+              const docText = view.state.doc.toString();
+              const idx = docText.indexOf(insertedPlaceholder);
+              if (idx !== -1) {
+                view.dispatch({
+                  changes: { from: idx, to: idx + insertedPlaceholder.length, insert: finalStr + (isSelection ? '' : '\n') }
+                });
+                replacedViaStringMatch = true;
+              }
+            }
+
+            if (!replacedViaStringMatch) {
+              const pFrom = isSelection ? fromPos : toPos;
+              const pTo = { line: pFrom.line, ch: pFrom.ch + placeholderLength };
+              try {
+                cm.replaceRange(finalStr + (isSelection ? '' : '\n'), pFrom, pTo);
+              } catch (err: any) {
+                console.error('Errore replaceRange:', err.message);
+              }
+            }
+          } else {
+            insertedPlaceholder = finalStr;
+            if (isSelection) {
+              cm.replaceRange(finalStr, fromPos, toPos);
+            } else {
+              cm.replaceRange(finalStr, toPos);
+            }
+            placeholderLength = finalStr.length;
+          }
+
+          setTimeout(() => {
+            if (cm.cm6) {
+              const view = cm.cm6;
+              view.contentDOM.focus();
+              view.requestMeasure();
+
+              const mainSel = view.state.selection.main;
+              if (mainSel) {
+                view.dispatch({
+                  effects: EditorView.scrollIntoView(mainSel.head, { y: 'center' })
+                });
+              }
+            }
+          }, 50);
+        } catch (e: any) {
+          console.error('Vim AI insert error', e);
+          showFlashMessage('Errore insert: ' + e.message);
+        }
       };
       onAiCommand(type, arg, textToProcess, isSelection, onInsert);
     }
   };
 
   Vim.defineEx('gemini', 'gem', (cm: any, params: any) => {
+    const { lang, onOpenAiAssistant, showFlashMessage } = getCtx();
     let arg = params?.argString?.trim();
     if (!arg) {
       if (onOpenAiAssistant) {
@@ -375,7 +380,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
       return;
     }
     if (arg.startsWith('ini ')) {
-       arg = arg.substring(4).trim();
+      arg = arg.substring(4).trim();
     }
     const lowerArg = arg.toLowerCase();
     if (lowerArg === 'which model' || lowerArg === 'model' || lowerArg === 'model?') {
@@ -411,6 +416,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   });
 
   Vim.defineEx('ai', 'ai', (cm: any, params: any) => {
+    const { lang, onOpenAiAssistant, showFlashMessage } = getCtx();
     let arg = params?.argString?.trim();
     if (!arg) {
       if (onOpenAiAssistant) {
@@ -424,6 +430,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   });
 
   Vim.defineEx('translate', 'tr', (cm: any, params: any) => {
+    const { onOpenAiAssistant } = getCtx();
     const arg = params?.argString?.trim();
     if (!arg && onOpenAiAssistant) {
       onOpenAiAssistant();
@@ -433,6 +440,7 @@ export function registerVimCommands(ctx: VimCommandsContext) {
   });
 
   Vim.defineEx('latin', 'lat', (cm: any, params: any) => {
+    const { onOpenAiAssistant } = getCtx();
     const arg = params?.argString?.trim();
     if (!arg && onOpenAiAssistant) {
       onOpenAiAssistant();

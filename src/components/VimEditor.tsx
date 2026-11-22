@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback, useDeferredValue } from 'react';
 import CodeMirror, { ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { vim, Vim, getCM } from '@replit/codemirror-vim';
 import { markdown, markdownLanguage } from '@codemirror/lang-markdown';
@@ -25,12 +25,140 @@ import { go } from '@codemirror/legacy-modes/mode/go';
 import { kotlin } from '@codemirror/legacy-modes/mode/clike';
 
 import { VimMode, FileFormat, AiProfile } from '../types';
-import { registerVimCommands } from '../lib/vimCommands';
+import { registerVimCommands, VimCommandsContext } from '../lib/vimCommands';
 import { Code, Sparkles, ListTree, Eye, Edit3, ZoomIn, ZoomOut, Check, X, FileText, Keyboard, Terminal, Maximize2, Minimize2, Info, ChevronUp, Copy, Table, Image as ImageIcon, HardDrive, Cloud, FilePlus } from 'lucide-react';
 import { renderRichPreviewContent } from '../utils/previewRenderer';
 import { AiAssistantModal } from './AiAssistantModal';
 import { Panel, Group as PanelGroup, Separator as PanelResizeHandle } from 'react-resizable-panels';
 import { TableOfContents } from './TableOfContents';
+
+const LATEX_FOLD_LEVELS = ['chapter', 'section', 'subsection', 'subsubsection', 'paragraph', 'subparagraph'];
+const MAX_FOLD_LOOKAHEAD = 400;
+
+// Module-scoped fold service so CodeMirror never rebuilds it across renders and lookahead is bounded
+const customFoldService = foldService.of((state, lineStart) => {
+  const doc = state.doc;
+  const line = doc.lineAt(lineStart);
+  const text = line.text;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const maxLine = Math.min(doc.lines, line.number + MAX_FOLD_LOOKAHEAD);
+
+  // 1. LaTeX \begin ... \end
+  if (trimmed.startsWith('\\begin{')) {
+    const beginMatch = trimmed.match(/^\\begin\{([^}]+)\}/);
+    if (beginMatch) {
+      const envName = beginMatch[1];
+      let endLine = line.number;
+      let depth = 1;
+      for (let i = line.number + 1; i <= maxLine; i++) {
+        const lText = doc.line(i).text.trim();
+        if (lText.startsWith(`\\begin{${envName}}`)) depth++;
+        if (lText.startsWith(`\\end{${envName}}`)) depth--;
+        endLine = i;
+        if (depth === 0) break;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+  }
+
+  // 2. LaTeX Headings
+  if (trimmed.charCodeAt(0) === 92) { // '\\'
+    const headingMatch = trimmed.match(/^\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
+    if (headingMatch) {
+      const levelIdx = LATEX_FOLD_LEVELS.indexOf(headingMatch[1]);
+      let endLine = line.number;
+      for (let i = line.number + 1; i <= maxLine; i++) {
+        const lText = doc.line(i).text.trim();
+        if (lText.charCodeAt(0) === 92) {
+          const nextHeadingMatch = lText.match(/^\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
+          if (nextHeadingMatch && LATEX_FOLD_LEVELS.indexOf(nextHeadingMatch[1]) <= levelIdx) break;
+        }
+        endLine = i;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+  }
+
+  // 3. Markdown headings
+  if (trimmed.charCodeAt(0) === 35) { // '#'
+    const mdMatch = trimmed.match(/^(#{1,6})\s/);
+    if (mdMatch) {
+      const level = mdMatch[1].length;
+      let endLine = line.number;
+      for (let i = line.number + 1; i <= maxLine; i++) {
+        const lText = doc.line(i).text.trim();
+        if (lText.charCodeAt(0) === 35) {
+          const nextMdMatch = lText.match(/^(#{1,6})\s/);
+          if (nextMdMatch && nextMdMatch[1].length <= level) break;
+        }
+        endLine = i;
+      }
+      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+    }
+  }
+
+  // 4. Code Blocks (def/class/function)
+  if (/^(def |class |function |\{)/.test(trimmed)) {
+    let endLine = line.number;
+    for (let i = line.number + 1; i <= maxLine; i++) {
+      if (/^(def |class |function |\}|\\})/.test(doc.line(i).text.trim())) break;
+      endLine = i;
+    }
+    if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+  }
+
+  // 5. Indent-based folding fallback (only for explicitly indented blocks, never plain col-0 prose!)
+  const indent = text.search(/\S/);
+  if (indent > 0) {
+    let nextLineIndent = -1;
+    let nextLineNum = line.number + 1;
+    const probeMax = Math.min(doc.lines, line.number + 12);
+    while (nextLineNum <= probeMax) {
+      const nextText = doc.line(nextLineNum).text;
+      if (nextText.trim().length > 0) {
+        nextLineIndent = nextText.search(/\S/);
+        break;
+      }
+      nextLineNum++;
+    }
+
+    if (nextLineIndent > indent) {
+      let endLine = nextLineNum;
+      for (let i = nextLineNum + 1; i <= maxLine; i++) {
+        const lText = doc.line(i).text;
+        if (lText.trim().length > 0 && lText.search(/\S/) <= indent) break;
+        endLine = i;
+      }
+      return { from: line.to, to: doc.line(endLine).to };
+    }
+  }
+
+  return null;
+});
+
+const RichPreviewPane = React.memo(function RichPreviewPane({
+  content,
+  format,
+  theme,
+  previewZoom,
+}: {
+  content: string;
+  format: FileFormat;
+  theme: 'light' | 'dark' | 'system';
+  previewZoom: number;
+}) {
+  const rendered = useMemo(
+    () => renderRichPreviewContent(content, format, theme),
+    [content, format, theme]
+  );
+  return (
+    <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
+      {rendered}
+    </div>
+  );
+});
 
 interface VimEditorProps {
   content: string;
@@ -106,6 +234,10 @@ export function VimEditor({
   onOpenAiProfilesModal
 }: VimEditorProps) {
   const editorRef = useRef<ReactCodeMirrorRef>(null);
+  const [cmView, setCmView] = useState<EditorView | null>(null);
+  const handleCreateEditor = useCallback((view: EditorView) => {
+    setCmView(view);
+  }, []);
   const onCursorChangeRef = useRef(onCursorChange);
   useEffect(() => {
     onCursorChangeRef.current = onCursorChange;
@@ -351,20 +483,53 @@ export function VimEditor({
     return true;
   };
 
-  // Synchronize CodeMirror internal document if external content changes without remounting
+  const lastEmittedContentRef = useRef<string>(content);
+  const lastSessionIdRef = useRef<number>(fileSessionId);
+
+  // Synchronize CodeMirror internal document ONLY on real external content changes or :e session switches
+  // (never calls view.state.doc.toString() on normal typing keystrokes!)
   useEffect(() => {
-    if (editorRef.current?.view) {
-      const view = editorRef.current.view;
-      const currentDoc = view.state.doc.toString();
-      if (currentDoc !== content) {
+    const sessionChanged = fileSessionId !== lastSessionIdRef.current;
+    if (!sessionChanged && content === lastEmittedContentRef.current) {
+      return;
+    }
+    lastEmittedContentRef.current = content;
+    lastSessionIdRef.current = fileSessionId;
+
+    const view = editorRef.current?.view || cmView;
+    if (!view) return;
+
+    const currentDoc = view.state.doc.toString();
+    if (currentDoc !== content || sessionChanged) {
+      (window as any).isVimHandling = true;
+      try {
         view.dispatch({
-          changes: { from: 0, to: currentDoc.length, insert: content }
+          changes: currentDoc !== content ? { from: 0, to: currentDoc.length, insert: content } : undefined,
+          selection: sessionChanged ? { anchor: 0, head: 0 } : undefined,
+          effects: sessionChanged ? EditorView.scrollIntoView(0, { y: 'start' }) : undefined,
+        });
+      } finally {
+        (window as any).isVimHandling = false;
+      }
+
+      if (sessionChanged) {
+        try {
+          const cm = getCM(view);
+          if (cm && Vim && ((cm as any).state?.vim?.insertMode || (cm as any).state?.vim?.visualMode)) {
+            Vim.handleKey(cm, '<Esc>', 'mapping');
+          }
+        } catch {}
+        setCursorPos({ line: 1, col: 1 });
+        onCursorChangeRef.current?.(1, 1);
+        requestAnimationFrame(() => {
+          view.contentDOM.focus();
         });
       }
     }
-  }, [content, filename, fileSessionId]);
+  }, [content, fileSessionId, cmView]);
 
   const handleEditorChange = useCallback((val: string) => {
+    lastEmittedContentRef.current = val;
     if (setContentRef.current) setContentRef.current(val);
   }, []);
   const lastKeydownRef = useRef<{key: string, time: number}>({key: '', time: 0});
@@ -542,104 +707,23 @@ export function VimEditor({
   );
 
   const [cursorPos, setCursorPos] = useState({ line: 1, col: 1 });
+  const lastCursorRef = useRef({ line: 1, col: 1 });
+  const cursorRafRef = useRef<number | null>(null);
 
-  const customFoldService = foldService.of((state, lineStart, lineEnd) => {
-    const doc = state.doc;
-    const line = doc.lineAt(lineStart);
-    const text = line.text;
-    const trimmed = text.trim();
-    
-    const latexLevels = ['chapter', 'section', 'subsection', 'subsubsection', 'paragraph', 'subparagraph'];
-    
-    // 1. egin ... \end
-    const beginMatch = trimmed.match(/^\\begin\{([^}]+)\}/);
-    if (beginMatch) {
-      const envName = beginMatch[1];
-      let endLine = line.number;
-      let depth = 1;
-      for (let i = line.number + 1; i <= doc.lines; i++) {
-        const lText = doc.line(i).text.trim();
-        if (lText.startsWith(`\\begin{${envName}}`)) depth++;
-        if (lText.startsWith(`\\end{${envName}}`)) depth--;
-        endLine = i;
-        if (depth === 0) break;
-      }
-      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
+  // Debounced + deferred content for Markdown preview & TOC (keeps editor typing instant on 66 KB+ docs)
+  const [debouncedPreviewContent, setDebouncedPreviewContent] = useState(content);
+  useEffect(() => {
+    if (!showPreview) return;
+    if (content.length <= 12000) {
+      setDebouncedPreviewContent(content);
+      return;
     }
-
-    // 2. LaTeX Headings
-    const headingMatch = trimmed.match(/^\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
-    if (headingMatch) {
-      const levelIdx = latexLevels.indexOf(headingMatch[1]);
-      let endLine = line.number;
-      for (let i = line.number + 1; i <= doc.lines; i++) {
-        const lText = doc.line(i).text.trim();
-        const nextHeadingMatch = lText.match(/^\\(chapter|section|subsection|subsubsection|paragraph|subparagraph)/);
-        if (nextHeadingMatch) {
-          const nextLevelIdx = latexLevels.indexOf(nextHeadingMatch[1]);
-          if (nextLevelIdx <= levelIdx) break;
-        }
-        endLine = i;
-      }
-      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
-    }
-    
-    // 3. Markdown headings
-    const mdMatch = trimmed.match(/^(#+)\s/);
-    if (mdMatch) {
-       const level = mdMatch[1].length;
-       let endLine = line.number;
-       for (let i = line.number + 1; i <= doc.lines; i++) {
-         const lText = doc.line(i).text.trim();
-         const nextMdMatch = lText.match(/^(#+)\s/);
-         if (nextMdMatch && nextMdMatch[1].length <= level) break;
-         endLine = i;
-       }
-       if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
-    }
-    
-    // 4. Code Blocks (def/class/function)
-    const isCodeHeading = /^(def |class |function |\{)/.test(trimmed);
-    if (isCodeHeading) {
-      let endLine = line.number;
-      for (let i = line.number + 1; i <= doc.lines; i++) {
-        if (/^(def |class |function |\}|\\})/.test(doc.line(i).text.trim())) break;
-        endLine = i;
-      }
-      if (endLine > line.number) return { from: line.to, to: doc.line(endLine).to };
-    }
-    
-    // 5. Indent-based folding fallback
-    if (trimmed.length > 0) {
-      const indent = text.search(/\S/);
-      if (indent >= 0) {
-        let nextLineIndent = -1;
-        let nextLineNum = line.number + 1;
-        while (nextLineNum <= doc.lines) {
-          const nextText = doc.line(nextLineNum).text;
-          if (nextText.trim().length > 0) {
-            nextLineIndent = nextText.search(/\S/);
-            break;
-          }
-          nextLineNum++;
-        }
-
-        if (nextLineIndent > indent) {
-          let endLine = nextLineNum;
-          for (let i = nextLineNum + 1; i <= doc.lines; i++) {
-            const lText = doc.line(i).text;
-            if (lText.trim().length > 0) {
-              if (lText.search(/\S/) <= indent) break;
-            }
-            endLine = i;
-          }
-          return { from: line.to, to: doc.line(endLine).to };
-        }
-      }
-    }
-    
-    return null;
-  });
+    const timer = setTimeout(() => {
+      setDebouncedPreviewContent(content);
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [content, showPreview]);
+  const deferredPreviewContent = useDeferredValue(debouncedPreviewContent);
 
   const extensions = useMemo(() => {
     const exts = [
@@ -825,8 +909,18 @@ export function VimEditor({
         const head = update.state.selection.main.head;
         const line = update.state.doc.lineAt(head);
         const col = head - line.from + 1;
-        setCursorPos({ line: line.number, col });
-        onCursorChangeRef.current?.(line.number, col);
+        const prev = lastCursorRef.current;
+        if (prev.line !== line.number || prev.col !== col) {
+          lastCursorRef.current = { line: line.number, col };
+          if (cursorRafRef.current === null) {
+            cursorRafRef.current = requestAnimationFrame(() => {
+              cursorRafRef.current = null;
+              const latest = lastCursorRef.current;
+              setCursorPos(latest);
+              onCursorChangeRef.current?.(latest.line, latest.col);
+            });
+          }
+        }
 
         if (isTouchDeviceRef.current || (typeof window !== 'undefined' && window.innerWidth < 1024)) {
           requestAnimationFrame(() => {
@@ -920,13 +1014,44 @@ export function VimEditor({
   // Handle Tab key overriding CodeMirror defaults in Insert mode
   // The `vim` extension handles Insert mode keymaps, so we let CodeMirror's basicSetup or custom extension handle it.
 
+  // Keep a mutable ref to the latest Vim command callbacks & state so commands are registered ONCE
+  const vimCtxRef = useRef<VimCommandsContext>({
+    lang,
+    filename,
+    content,
+    onSaveFileState,
+    onReadFileState,
+    onOpenFileState,
+    onTearFileState,
+    onCloseFileState,
+    onShowHelp,
+    onAiCommand,
+    setLang,
+    showFlashMessage,
+    setShowLineNumbers,
+    onOpenAiAssistant: handleOpenAiModal,
+    insertBelowCursor,
+  });
+  vimCtxRef.current = {
+    lang,
+    filename,
+    content,
+    onSaveFileState,
+    onReadFileState,
+    onOpenFileState,
+    onTearFileState,
+    onCloseFileState,
+    onShowHelp,
+    onAiCommand,
+    setLang,
+    showFlashMessage,
+    setShowLineNumbers,
+    onOpenAiAssistant: handleOpenAiModal,
+    insertBelowCursor,
+  };
+
   useEffect(() => {
-    // Custom Vim commands mapping
-    
-    // Monkey-patch findKey to allow `ng` instead of `ngg` (jump to line n)
-    // We only do this once to avoid infinite wrapping.
-    // Map G in visual mode to support both <count>G (e.g. 55G) and plain G (to end of file),
-    // selecting the full target line in both V (visual-line) and v / v$ (character-wise visual) modes.
+    // Register custom Vim motions, actions, and Ex commands ONCE on mount (zero keymap pollution!)
     Vim.defineMotion("gotoEndFull", (cm: any, head: any, motionArgs: any, vim: any) => {
       const firstLine = cm.firstLine ? cm.firstLine() : 0;
       const lastLine = cm.lastLine ? cm.lastLine() : cm.lineCount() - 1;
@@ -988,42 +1113,42 @@ export function VimEditor({
       (Vim as any)._liviaFindKeyPatched = true;
     }
 
-    Vim.defineAction('fold', (cm) => {
+    Vim.defineAction('fold', () => {
        if (editorRef.current?.view) foldCode(editorRef.current.view);
     });
-    Vim.defineAction('unfold', (cm) => {
+    Vim.defineAction('unfold', () => {
        if (editorRef.current?.view) unfoldCode(editorRef.current.view);
     });
 
-    registerVimCommands({
-      lang,
-      filename,
-      content,
-      onSaveFileState,
-      onReadFileState,
-      onOpenFileState,
-      onTearFileState,
-      onCloseFileState,
-      onShowHelp,
-      onAiCommand,
-      setLang,
-      showFlashMessage,
-      setShowLineNumbers,
-      onOpenAiAssistant: handleOpenAiModal,
-      insertBelowCursor
-    });
-  }, [filename, content, lang, onSaveFileState, onReadFileState, onOpenFileState, onTearFileState, onCloseFileState, onShowHelp, onAiCommand, setShowLineNumbers, handleOpenAiModal, insertBelowCursor]);
+    registerVimCommands(() => vimCtxRef.current);
 
+    return () => {
+      if (cursorRafRef.current !== null) {
+        cancelAnimationFrame(cursorRafRef.current);
+        cursorRafRef.current = null;
+      }
+    };
+  }, []);
 
-
-  // Patch Vim's openDialog on mobile to use native prompt (fixes focus/keyboard issues)
+  // Patch Vim's openDialog ONLY on mobile touch devices (zero polling on desktop!)
   useEffect(() => {
+    if (!isTouchDevice) return;
+
+    let interval: ReturnType<typeof setInterval> | null = null;
     const patchDialog = () => {
-       if (editorRef.current?.view && isTouchDeviceRef.current) {
-          const cm = getCM(editorRef.current.view);
-          if (cm && !(cm as any)._dialogPatched) {
-             (cm as any)._dialogPatched = true;
-             cm.openDialog = (template: any, callback: any, options: any) => {
+      const view = editorRef.current?.view || cmView;
+      if (view && isTouchDeviceRef.current) {
+        const cm = getCM(view);
+        if (cm) {
+          if ((cm as any)._dialogPatched) {
+            if (interval) {
+              clearInterval(interval);
+              interval = null;
+            }
+            return;
+          }
+          (cm as any)._dialogPatched = true;
+          cm.openDialog = (template: any, callback: any, options: any) => {
             let shortText = "";
             if (typeof options?.prefix === "string" && options.prefix) {
                shortText += options.prefix;
@@ -1045,7 +1170,6 @@ export function VimEditor({
             if (result !== null) {
               if (callback) {
                  try {
-                    // Do not wrap in custom cm.operation which suppresses scrollIntoView
                     callback(result);
                  } catch(e: any) {
                     console.error("Dialog callback error", e);
@@ -1053,7 +1177,6 @@ export function VimEditor({
               }
               
               if (isSearch) {
-                // Ensure editor scrolls the matched cursor position directly into view (centered on screen)
                 const scrollToCurrentMatch = () => {
                   if (editorRef.current?.view) {
                     const v = editorRef.current.view;
@@ -1070,7 +1193,6 @@ export function VimEditor({
                 setTimeout(scrollToCurrentMatch, 300);
               }
             } else {
-              // User clicked Cancel on prompt dialog: return cleanly to Normal mode
               if (cm && Vim) {
                 try {
                   Vim.handleKey(cm, '<Esc>', 'mapping');
@@ -1092,80 +1214,97 @@ export function VimEditor({
               }, 50);
             }
             
-            return () => {}; // Return a dummy close function
-             };
+            return () => {};
+          };
+          if (interval) {
+            clearInterval(interval);
+            interval = null;
           }
-       }
+        }
+      }
     };
     
-    // Try patching immediately and also set a few fallbacks
     patchDialog();
-    const interval = setInterval(patchDialog, 500);
-    return () => clearInterval(interval);
-  }, [isTouchDevice]);
+    interval = setInterval(patchDialog, 500);
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isTouchDevice, cmView]);
 
-      // Track Vim mode and fix search panel UI globally
+  // Track Vim mode and fix search panel UI (scoped, zero global querySelectorAll, always disconnects observer!)
   useEffect(() => {
-    let observer: MutationObserver | null = null;
-    if (editorRef.current?.view?.dom) {
-      observer = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-          if (mutation.addedNodes.length > 0) {
-            const panels = document.querySelectorAll('.cm-panel input, .cm-vim-panel input');
-            panels.forEach(input => {
-              if (!input.hasAttribute('data-vim-fixed')) {
-                input.setAttribute('autocomplete', 'off');
-                input.setAttribute('autocorrect', 'off');
-                input.setAttribute('autocapitalize', 'off');
-                input.setAttribute('spellcheck', 'false');
-                input.setAttribute('data-form-type', 'other');
-                input.setAttribute('data-vim-fixed', 'true');
-                
-                input.addEventListener('keydown', (e: Event) => {
-                  const ke = e as KeyboardEvent;
-                  if (ke.key === 'Enter') {
-                    const scrollMatch = () => {
-                      if (editorRef.current?.view) {
-                        const v = editorRef.current.view;
-                        v.requestMeasure();
-                        const head = v.state.selection.main.head;
-                        v.dispatch({
-                          effects: EditorView.scrollIntoView(head, { y: 'center' })
-                        });
-                      }
-                    };
-                    scrollMatch();
-                    setTimeout(scrollMatch, 50);
-                    setTimeout(scrollMatch, 150);
-                    setTimeout(scrollMatch, 300);
-                  }
-                });
-                
-                const parent = input.parentElement;
-                if (parent) {
-                  // Hide any span that contains "regexp" text
-                  const spans = parent.querySelectorAll('span');
-                  spans.forEach(span => {
-                    if (span.textContent?.toLowerCase().includes('regexp')) {
-                      span.style.display = 'none';
-                    }
+    const view = cmView || editorRef.current?.view;
+    if (!view) return;
+
+    const patchPanelInputs = (root: ParentNode) => {
+      const inputs = root.querySelectorAll('.cm-panel input, .cm-vim-panel input');
+      inputs.forEach(input => {
+        if (!input.hasAttribute('data-vim-fixed')) {
+          input.setAttribute('autocomplete', 'off');
+          input.setAttribute('autocorrect', 'off');
+          input.setAttribute('autocapitalize', 'off');
+          input.setAttribute('spellcheck', 'false');
+          input.setAttribute('data-form-type', 'other');
+          input.setAttribute('data-vim-fixed', 'true');
+
+          input.addEventListener('keydown', (e: Event) => {
+            const ke = e as KeyboardEvent;
+            if (ke.key === 'Enter') {
+              const scrollMatch = () => {
+                if (editorRef.current?.view) {
+                  const v = editorRef.current.view;
+                  v.requestMeasure();
+                  const head = v.state.selection.main.head;
+                  v.dispatch({
+                    effects: EditorView.scrollIntoView(head, { y: 'center' })
                   });
-                  // Also check direct text nodes just in case
-                  parent.childNodes.forEach(node => {
-                     if (node.nodeType === 3) {
-                        let text = node.textContent || '';
-                        if (text.toLowerCase().includes('regexp')) {
-                           node.textContent = text.replace(/\(.*?regexp.*?\)/i, '').replace(/javascript regexp/i, '').replace(/regexp/i, '');
-                        }
-                     }
-                  });
+                }
+              };
+              scrollMatch();
+              setTimeout(scrollMatch, 50);
+              setTimeout(scrollMatch, 150);
+            }
+          });
+
+          const parent = input.parentElement;
+          if (parent) {
+            const spans = parent.querySelectorAll('span');
+            spans.forEach(span => {
+              if (span.textContent?.toLowerCase().includes('regexp')) {
+                span.style.display = 'none';
+              }
+            });
+            parent.childNodes.forEach(node => {
+              if (node.nodeType === 3) {
+                const text = node.textContent || '';
+                if (text.toLowerCase().includes('regexp')) {
+                  node.textContent = text.replace(/\(.*?regexp.*?\)/i, '').replace(/javascript regexp/i, '').replace(/regexp/i, '');
                 }
               }
             });
           }
         }
       });
-      observer.observe(editorRef.current.view.dom, { childList: true, subtree: true });
+    };
+
+    let observer: MutationObserver | null = null;
+    if (view.dom) {
+      observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          for (let i = 0; i < mutation.addedNodes.length; i++) {
+            const node = mutation.addedNodes[i];
+            if (node instanceof HTMLElement && (node.classList.contains('cm-panels') || node.classList.contains('cm-panel') || node.classList.contains('cm-vim-panel'))) {
+              patchPanelInputs(node);
+            }
+          }
+        }
+      });
+      // Observe ONLY direct children of .cm-editor (where .cm-panels mount) — never subtree of .cm-content!
+      observer.observe(view.dom, { childList: true, subtree: false });
+      const existingPanels = view.dom.querySelector('.cm-panels');
+      if (existingPanels) {
+        patchPanelInputs(existingPanels);
+      }
     }
 
     const handleVimMode = (e: any) => {
@@ -1189,7 +1328,7 @@ export function VimEditor({
         setStatusMessage(`-- ${m.toUpperCase()} MODE --`);
       }
     };
-    
+
     const handleVimKeyPress = (key: string) => {
       if (key === 'n' || key === 'N') {
         const scrollToCurrentMatch = () => {
@@ -1208,19 +1347,23 @@ export function VimEditor({
       }
     };
 
-    const view = editorRef.current?.view;
-    if (view) {
-       const cm = getCM(view);
-       if (cm && (cm as any).on) {
-          (cm as any).on('vim-mode-change', handleVimMode);
-          (cm as any).on('vim-keypress', handleVimKeyPress);
-          return () => {
-             (cm as any).off('vim-mode-change', handleVimMode);
-             (cm as any).off('vim-keypress', handleVimKeyPress);
-          };
-       }
+    const cm = getCM(view);
+    if (cm && (cm as any).on) {
+      (cm as any).on('vim-mode-change', handleVimMode);
+      (cm as any).on('vim-keypress', handleVimKeyPress);
     }
-  }, [editorRef.current?.view, onModeChange]);
+
+    return () => {
+      if (observer) {
+        observer.disconnect();
+        observer = null;
+      }
+      if (cm && (cm as any).off) {
+        (cm as any).off('vim-mode-change', handleVimMode);
+        (cm as any).off('vim-keypress', handleVimKeyPress);
+      }
+    };
+  }, [cmView, onModeChange]);
 
   const basicSetupOptions = useMemo(() => ({
     lineNumbers: showLineNumbers,
@@ -1515,7 +1658,6 @@ export function VimEditor({
             
           <div className={`flex-1 overflow-hidden ${currentMode === 'insert' ? 'cm-mode-insert' : 'cm-mode-' + currentMode}`} style={{ fontSize: `${editorFontSize}px` }}>
             <CodeMirror
-              key={`${filename}_${fileSessionId}`}
               ref={editorRef}
               value={content}
               height="100%"
@@ -1528,6 +1670,7 @@ export function VimEditor({
               }
               extensions={extensions}
               basicSetup={basicSetupOptions}
+              onCreateEditor={handleCreateEditor}
               onChange={handleEditorChange}
               className="h-full"
             />
@@ -1611,9 +1754,12 @@ export function VimEditor({
                 </div>
               </div>
             )}
-                  <div style={{ zoom: `${previewZoom}%` }} className="transition-all duration-200 origin-top-left">
-              {renderRichPreviewContent(content, format, theme)}
-            </div>
+                  <RichPreviewPane
+                    content={deferredPreviewContent}
+                    format={format}
+                    theme={theme}
+                    previewZoom={previewZoom}
+                  />
                 </Panel>
                 
                 {/* TOC Panel */}
@@ -1622,7 +1768,7 @@ export function VimEditor({
                     <PanelResizeHandle className="w-1.5 sm:w-2 bg-gray-200 dark:bg-[#2D2D2D] hover:bg-blue-400 dark:hover:bg-blue-500 active:bg-blue-600 cursor-col-resize transition-colors z-10 flex-shrink-0" />
                     <Panel defaultSize={25} minSize={15} className="bg-white dark:bg-[#16181D] overflow-hidden">
                       <TableOfContents 
-                   content={content}
+                   content={deferredPreviewContent}
                    lang={lang}
                    activeLine={cursorPos.line}
                    onNavigate={(line) => {

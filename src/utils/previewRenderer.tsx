@@ -58,135 +58,102 @@ export function renderRichPreviewContent(content: string, format: FileFormat, th
     let codeBuffer: string[] = [];
     let elements: React.ReactNode[] = [];
 
-    const parseInline = (str: string): React.ReactNode[] => {
-      const parts: React.ReactNode[] = [];
-      let remaining = str;
-      let keyCounter = 0;
+    // Single-pass O(N) inline markdown/color token scanner
+    const INLINE_TOKEN_RE =
+      /<color:(#?[a-zA-Z0-9_]+)>([\s\S]*?)<\/color>|!\[([^\]]*)\]\(([^)]+)\)|!\[([^\]]*)\]\[([^\]]+)\]|\[([^\]]+)\]\(([^)]+)\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*/gi;
 
-      while (remaining.length > 0) {
-        // Color tags <color:#HEX>text</color>
-        const colorMatch = remaining.match(/^<color:(#?[a-zA-Z0-9_]+)>(.*?)<\/color>/i);
-        if (colorMatch) {
-          const rawColor = colorMatch[1];
+    const parseInline = (str: string): React.ReactNode[] => {
+      if (!str) return [];
+      const parts: React.ReactNode[] = [];
+      let lastIdx = 0;
+      let keyCounter = 0;
+      const re = new RegExp(INLINE_TOKEN_RE.source, INLINE_TOKEN_RE.flags);
+      let match: RegExpExecArray | null;
+
+      while ((match = re.exec(str)) !== null) {
+        if (match.index > lastIdx) {
+          parts.push(str.slice(lastIdx, match.index));
+        }
+
+        if (match[1] !== undefined) {
+          // <color:#HEX>text</color>
+          const rawColor = match[1];
           const colorVal = rawColor.startsWith('#') || /^[a-zA-Z]+$/.test(rawColor) ? rawColor : `#${rawColor}`;
-          const innerTxt = colorMatch[2];
           parts.push(
             <span key={keyCounter++} style={{ color: colorVal, fontWeight: 600 }}>
-              {parseInline(innerTxt)}
+              {parseInline(match[2])}
             </span>
           );
-          remaining = remaining.substring(colorMatch[0].length);
-          continue;
-        }
+        } else if (match[3] !== undefined || match[5] !== undefined) {
+          // Image ![alt](url) or ![alt][ref]
+          const isRef = match[5] !== undefined;
+          const altText = isRef ? match[5] : match[3];
+          let url = isRef ? references[match[6]] || '' : match[4];
 
-        // Images ![alt](url) or ![alt][ref]
-        const imgMatch = remaining.match(/^!\[(.*?)\]\((.*?)\)/);
-        const refImgMatch = remaining.match(/^!\[(.*?)\]\[(.*?)\]/);
-        
-        let matched = false;
-        let altText = '';
-        let url = '';
-        let matchLength = 0;
-
-        if (imgMatch) {
-          altText = imgMatch[1];
-          url = imgMatch[2];
-          matchLength = imgMatch[0].length;
-          matched = true;
-        } else if (refImgMatch) {
-          altText = refImgMatch[1];
-          const refKey = refImgMatch[2];
-          if (references[refKey]) {
-             url = references[refKey];
-             matchLength = refImgMatch[0].length;
-             matched = true;
-          }
-        }
-
-        if (matched) {
-          // Transform Google Drive viewer URLs to direct content URLs
-          if (url.includes('drive.google.com')) {
-            const driveIdMatch = url.match(/\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
-            if (driveIdMatch && driveIdMatch[1]) {
-              // The thumbnail endpoint is currently the most reliable way to hotlink Drive images
-              url = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1000`;
+          if (url) {
+            if (url.includes('drive.google.com')) {
+              const driveIdMatch = url.match(/\/d\/([^/]+)/) || url.match(/[?&]id=([^&]+)/);
+              if (driveIdMatch && driveIdMatch[1]) {
+                url = `https://drive.google.com/thumbnail?id=${driveIdMatch[1]}&sz=w1000`;
+              }
             }
+            parts.push(
+              <img
+                key={keyCounter++}
+                src={url}
+                alt={altText || 'Immagine'}
+                loading="lazy"
+                className="max-w-full h-auto my-3 rounded-lg shadow-sm border border-gray-200 dark:border-zinc-800"
+                referrerPolicy="no-referrer"
+              />
+            );
+          } else {
+            parts.push(match[0]);
           }
-        
-          parts.push(
-            <img
-              key={keyCounter++}
-              src={url}
-              alt={altText || 'Immagine'}
-              className="max-w-full h-auto my-3 rounded-lg shadow-sm border border-gray-200 dark:border-zinc-800"
-              referrerPolicy="no-referrer"
-            />
-          );
-          remaining = remaining.substring(matchLength);
-          continue;
-        }
-
-        // Link [text](url)
-        const linkMatch = remaining.match(/^\[(.*?)\]\((.*?)\)/);
-        if (linkMatch) {
+        } else if (match[7] !== undefined) {
+          // Link [text](url)
           parts.push(
             <a
               key={keyCounter++}
-              href={linkMatch[2]}
+              href={match[8]}
               target="_blank"
               rel="noopener noreferrer"
               className="text-blue-600 dark:text-blue-400 underline font-medium hover:text-blue-800"
             >
-              {linkMatch[1]}
+              {match[7]}
             </a>
           );
-          remaining = remaining.substring(linkMatch[0].length);
-          continue;
-        }
-
-        // Inline Code `code`
-        const codeMatch = remaining.match(/^`(.*?)`/);
-        if (codeMatch) {
+        } else if (match[9] !== undefined) {
+          // Inline Code `code`
           parts.push(
             <code
               key={keyCounter++}
               className="bg-gray-100 dark:bg-zinc-800 text-pink-600 dark:text-pink-400 px-1.5 py-0.5 rounded text-[11px] font-mono border border-gray-200 dark:border-zinc-700"
             >
-              {codeMatch[1]}
+              {match[9]}
             </code>
           );
-          remaining = remaining.substring(codeMatch[0].length);
-          continue;
+        } else if (match[10] !== undefined) {
+          // Bold **text**
+          parts.push(
+            <strong key={keyCounter++} className="font-bold text-gray-900 dark:text-white">
+              {match[10]}
+            </strong>
+          );
+        } else if (match[11] !== undefined) {
+          // Italic *text*
+          parts.push(
+            <em key={keyCounter++} className="italic text-gray-800 dark:text-zinc-200">
+              {match[11]}
+            </em>
+          );
         }
 
-        // Bold **text**
-        const boldMatch = remaining.match(/^\*\*(.*?)\*\*/);
-        if (boldMatch) {
-          parts.push(<strong key={keyCounter++} className="font-bold text-gray-900 dark:text-white">{boldMatch[1]}</strong>);
-          remaining = remaining.substring(boldMatch[0].length);
-          continue;
-        }
+        lastIdx = re.lastIndex;
+      }
 
-        // Italic *text*
-        const italicMatch = remaining.match(/^\*(.*?)\*/);
-        if (italicMatch) {
-          parts.push(<em key={keyCounter++} className="italic text-gray-800 dark:text-zinc-200">{italicMatch[1]}</em>);
-          remaining = remaining.substring(italicMatch[0].length);
-          continue;
-        }
-
-        // Plain text until next special char
-        const nextSpecial = remaining.search(/[!<*`\[]/);
-        if (nextSpecial === -1) {
-          parts.push(remaining);
-          break;
-        } else if (nextSpecial === 0) {
-          parts.push(remaining[0]);
-          remaining = remaining.substring(1);
-        } else {
-          parts.push(remaining.substring(0, nextSpecial));
-          remaining = remaining.substring(nextSpecial);
-        }
+      if (lastIdx < str.length) {
+        parts.push(str.slice(lastIdx));
       }
 
       return parts;

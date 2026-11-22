@@ -1,6 +1,0 @@
-{
-  "summary":  "Piano di implementazione per rimuovere le limitazioni di accesso POSIX alla $HOME e alle sottocartelle tramite montaggio multi-cartella (Virtual $HOME), aggancio diretto di file singoli con showOpenFilePicker prefiltrato e memorizzazione permanente dei permessi in IndexedDB.",
-  "updatedAt":  "2026-11-01T16:24:48.635916775Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}
