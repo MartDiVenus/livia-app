@@ -98,6 +98,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [needsUniversalFolderUnlock, setNeedsUniversalFolderUnlock] = useState(false);
   const [reauthMount, setReauthMount] = useState<{ id: string; name: string } | null>(null);
+  const [staleFallbackMount, setStaleFallbackMount] = useState<{ id: string; name: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
@@ -124,6 +125,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
       setStatusMessage(null);
       setNeedsUniversalFolderUnlock(false);
       setReauthMount(null);
+      setStaleFallbackMount(null);
       setAction(initialAction);
 
       warmUpPosixHandlesCache().then(() => {
@@ -142,6 +144,15 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                 lang === 'it'
                   ? `La cartella "${cov.coveredByMount.name}" è già montata: clicca qui sotto per riattivare l'accesso in 1 clic (senza aprire il file browser) e aprire subito il file.`
                   : `Folder "${cov.coveredByMount.name}" is already mounted: click below to re-enable access in 1 click (no file browser) and open the file immediately.`,
+            });
+          } else if (cov.coveredByMount && cov.coveredByMount.mode === 'fallback') {
+            setStaleFallbackMount({ id: cov.coveredByMount.id, name: cov.coveredByMount.name });
+            setStatusMessage({
+              type: 'info',
+              text:
+                lang === 'it'
+                  ? `La cartella "${cov.coveredByMount.name}" è attualmente montata come snapshot statico e non include questo file. Clicca qui sotto per montarla in modalità Live (o aggiornare lo snapshot) e accedere subito a tutti i file presenti.`
+                  : `Folder "${cov.coveredByMount.name}" is currently mounted as a static snapshot and does not include this file. Click below to mount it Live (or refresh the snapshot) to access all existing and new files.`,
             });
           }
         }
@@ -170,6 +181,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     setPosixInput(val);
     setNeedsUniversalFolderUnlock(false);
     setReauthMount(null);
+    setStaleFallbackMount(null);
     if (val.trim() && !isDriveReferenceLike(val)) {
       const home = detectAndSaveHomePrefix(val);
       if (home && home !== detectedHome) {
@@ -207,19 +219,14 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     setStatusMessage(null);
     setNeedsUniversalFolderUnlock(false);
     setReauthMount(null);
+    setStaleFallbackMount(null);
     const win = window as any;
     const targetForInference = !isDriveInput && posixInput.trim() ? posixInput.trim() : undefined;
 
-    // 1. Inside a cross-origin iframe, showDirectoryPicker is blocked by Chromium.
-    if (isRunningInCrossOriginIframe()) {
-      fallbackDirInputRef.current?.click();
-      return;
-    }
-
-    // 2. For $HOME/Scaricati (Downloads), Chromium blocks showDirectoryPicker AND Linux GTK
-    // opens <input webkitdirectory> on "Recenti". Instead, use showOpenFilePicker({ startIn: 'downloads', multiple: true })
-    // which opens DIRECTLY inside Scaricati (never "Recenti") and supports Ctrl+A + full :w write-back!
+    // 1. For $HOME/Scaricati (Downloads), Chromium blocks showDirectoryPicker.
+    // Use showOpenFilePicker({ startIn: 'downloads', multiple: true }) when available.
     if (
+      !isRunningInCrossOriginIframe() &&
       coverageInfo &&
       !coverageInfo.classification.isDirectHomeRootFile &&
       coverageInfo.classification.isSystemBlockedDirectoryMount &&
@@ -231,9 +238,6 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
 
     if (typeof win.showDirectoryPicker === 'function') {
       try {
-        // Compute startIn 100% SYNCHRONOUSLY (zero await before showDirectoryPicker!)
-        // CRITICAL: Do NOT pass a static recycled `id` — Chrome ignores `startIn` when `id` has a
-        // stale/cancelled history entry and falls back to GTK "Recenti"!
         const startIn = resolveBestStartInSync(targetForInference || detectedHome || '~');
         let dirHandle: any = null;
         try {
@@ -261,8 +265,8 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
         setStatusMessage({
           type: 'success',
           text: isIt
-            ? `Cartella "${meta.name}" (${meta.basePrefix || meta.name}) montata! Tutti i file al suo interno sono ora sbloccati per :e, :r, :tear e :w.`
-            : `Folder "${meta.name}" (${meta.basePrefix || meta.name}) mounted! All files inside are now unlocked for :e, :r, :tear, and :w.`,
+            ? `Cartella "${meta.name}" (${meta.basePrefix || meta.name}) montata Live! Tutti i file al suo interno sono ora sbloccati per :e, :r, :tear e :w.`
+            : `Folder "${meta.name}" (${meta.basePrefix || meta.name}) mounted Live! All files inside are now unlocked for :e, :r, :tear, and :w.`,
         });
 
         if (targetForInference) {
@@ -271,17 +275,34 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
         return;
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
-        // User selected a Chromium-restricted system folder (e.g. $HOME/Scaricati or $HOME root).
+        const isIframeBlocked =
+          isRunningInCrossOriginIframe() ||
+          err?.name === 'SecurityError' ||
+          String(err?.message || '').toLowerCase().includes('cross origin');
+        if (isIframeBlocked) {
+          setStatusMessage({
+            type: 'error',
+            text: isIt
+              ? 'Chrome blocca l\'accesso live alle cartelle locali dentro un iframe embedded. Apri LiViA in una scheda autonoma (o come app PWA installata) per usare :e direttamente su cartelle locali.'
+              : 'Chrome blocks live local folder access inside an embedded iframe. Open LiViA in a standalone tab (or installed PWA) to use :e directly on local folders.',
+          });
+          return;
+        }
         setNeedsUniversalFolderUnlock(true);
         setStatusMessage({
           type: 'info',
           text: isIt
-            ? 'Chromium limita il montaggio diretto su questa cartella di sistema (es. $HOME/Scaricati): usa il pulsante verde qui sotto per aprire direttamente Scaricati e agganciare uno o più file (Ctrl+A, con :w attivo), oppure monta l’intera cartella in modalità testo/codice.'
-            : 'Chromium restricts direct folder mounting on this system folder (e.g. $HOME/Downloads): use the green button below to open Downloads directly and bind one or more files (Ctrl+A, with :w enabled), or mount the whole folder in text/code mode.',
+            ? 'Chromium limita il montaggio diretto su questa cartella di sistema (es. $HOME/Scaricati): usa il pulsante "Seleziona File" qui sotto per agganciare i file direttamente.'
+            : 'Chromium restricts direct folder mounting on this system folder (e.g. $HOME/Downloads): use "Select Files" below to bind files directly.',
         });
       }
     } else {
-      fallbackDirInputRef.current?.click();
+      setStatusMessage({
+        type: 'error',
+        text: isIt
+          ? 'Questo browser non supporta l\'accesso live alle cartelle (showDirectoryPicker). Usa Chrome/Edge in una scheda autonoma.'
+          : 'This browser does not support live folder access (showDirectoryPicker). Use Chrome/Edge in a standalone tab.',
+      });
     }
   };
 
@@ -404,6 +425,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
     setStatusMessage(null);
     setNeedsUniversalFolderUnlock(false);
     setReauthMount(null);
+    setStaleFallbackMount(null);
     try {
       await onExecutePosixAction(cleaned, targetAction);
       refreshMetadataState();
@@ -423,6 +445,14 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
           text: isIt
             ? `La cartella "${err.mountName || ''}" è già montata, ma dopo il ricaricamento della pagina Chrome richiede 1 clic di conferma (senza aprire il file browser).`
             : `Folder "${err.mountName || ''}" is already mounted, but after page reload Chrome requires 1 click to re-enable access (no file browser opened).`,
+        });
+      } else if (err?.code === 'FALLBACK_STALE_OR_MISSING' && err?.mountId) {
+        setStaleFallbackMount({ id: err.mountId, name: err.mountName || 'cartella' });
+        setStatusMessage({
+          type: 'info',
+          text: isIt
+            ? `La cartella "${err.mountName || ''}" era montata come snapshot statico e non include ancora questo file. Montala in modalità Live per aprire subito qualsiasi file al suo interno (inclusi nuovi file e :w).`
+            : `Folder "${err.mountName || ''}" was mounted as a static snapshot and does not include this file yet. Mount it Live to open any existing or new file inside it (with :w).`,
         });
       } else if (
         err?.code === 'DIRECTORY_PICKER_BLOCKED' ||
@@ -730,6 +760,28 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                   </button>
                 </div>
               )}
+              {staleFallbackMount && (
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleAuthorizeNativeDirectory}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-lg shadow-emerald-950/50 transition-colors cursor-pointer"
+                  >
+                    <FolderPlus size={15} />
+                    {isIt
+                      ? `Monta "${staleFallbackMount.name}" in modalità Live (tutti i file + :w)`
+                      : `Mount "${staleFallbackMount.name}" Live (all files + :w)`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => fallbackDirInputRef.current?.click()}
+                    className="px-3.5 py-2 bg-zinc-800 hover:bg-zinc-700 text-emerald-300 border border-emerald-500/40 rounded-lg text-xs font-semibold flex items-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <RefreshCw size={14} />
+                    {isIt ? 'Aggiorna Snapshot' : 'Refresh Snapshot'}
+                  </button>
+                </div>
+              )}
               {needsUniversalFolderUnlock && (
                 <div className="flex flex-wrap items-center gap-2 pt-1">
                   <button
@@ -910,6 +962,7 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                 <div className="flex flex-wrap gap-1.5">
                   {mountedDirs.map((dir) => {
                     const needsReauth = dir.mode === 'fs_api' && getMountedDirectoryPermissionState(dir.id) === 'prompt';
+                    const isSnapshot = dir.mode === 'fallback';
                     return (
                       <div
                         key={dir.id}
@@ -919,6 +972,15 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                         {dir.basePrefix && (
                           <span className="text-[10px] text-zinc-400">({dir.basePrefix})</span>
                         )}
+                        <span
+                          className={`text-[9px] font-sans px-1.5 py-0.5 rounded border ${
+                            isSnapshot
+                              ? 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                              : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                          }`}
+                        >
+                          {isSnapshot ? 'Snapshot' : 'Live'}
+                        </span>
                         {needsReauth && (
                           <button
                             type="button"
@@ -927,6 +989,16 @@ export const PosixPathModal: React.FC<PosixPathModalProps> = ({
                             title={isIt ? 'Riattiva permesso con 1 clic (senza aprire il file browser)' : 'Re-enable permission with 1 click (no file browser)'}
                           >
                             {isIt ? 'Riattiva' : 'Re-enable'}
+                          </button>
+                        )}
+                        {isSnapshot && (
+                          <button
+                            type="button"
+                            onClick={handleAuthorizeNativeDirectory}
+                            className="ml-1 px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 text-[10px] font-sans font-semibold cursor-pointer"
+                            title={isIt ? 'Aggiorna a montaggio Live per vedere tutti i file nuovi' : 'Upgrade to Live mount to see all new files'}
+                          >
+                            {isIt ? 'Aggiorna Live' : 'Upgrade Live'}
                           </button>
                         )}
                         <button

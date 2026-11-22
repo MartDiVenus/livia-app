@@ -19,7 +19,7 @@ import { exportToPDF } from './utils/pdfExport';
 import { downloadBlob } from './utils/downloadHelper';
 import { copyToClipboard } from './utils/clipboard';
 import { convertToLaTeX } from './utils/latexExport';
-import { generateGeminiContent } from './utils/geminiClient';
+import { generateGeminiContent, AiModelTier, normalizeAiModelTier } from './utils/geminiClient';
 import { VimMode, FileFormat, TEMPLATES, getTemplates, getLvarcTemplate, getHelpTemplate, getHelpColorsTemplate, getHelpFiguresTemplate, getHelpTablesTemplate, getHelpAiTemplate, HELP_TEMPLATE, HELP_COLORS_TEMPLATE, HELP_FIGURES_TEMPLATE, HELP_TABLES_TEMPLATE, HELP_AI_TEMPLATE, HELP_FIGURES_TABLES_TEMPLATE, FileData, sanitizeText, AiProfile } from './types';
 import { parseOutline, OutlineElement } from './utils/outlineParser';
 import { parseKeyFromVimCommand } from './utils/vimEngine';
@@ -86,7 +86,7 @@ interface LvaConfig {
   syntaxHighlight: boolean;
   lang?: 'it' | 'en';
   apiKey?: string;
-  model?: 'flash' | 'pro' | 'argon' | 'pro-thinking';
+  model?: AiModelTier;
 }
 
 export function checkIsMobile(): boolean {
@@ -156,14 +156,43 @@ function parseLvarc(content: string, isMobileOverride?: boolean): LvaConfig {
     }
 
     
-    if (trimmed === 'gem model argon' || trimmed === 'set model=argon' || trimmed === 'gem model=argon' || trimmed === 'gem model gemini-4-argon') {
-      config.model = 'argon';
-    } else if (trimmed === 'gem model flash' || trimmed === 'set model=flash' || trimmed === 'gem model=flash' || trimmed === 'gem model flash-lite' || trimmed === 'set model=flash-lite' || trimmed === 'gem model=flash-lite') {
-      config.model = 'flash';
-    } else if (trimmed === 'gem model pro-thinking' || trimmed === 'set model=pro-thinking' || trimmed === 'gem model=pro-thinking') {
-      config.model = 'pro-thinking';
-    } else if (trimmed === 'gem model pro' || trimmed === 'set model=pro' || trimmed === 'gem model=pro') {
-      config.model = 'pro';
+    if (
+      trimmed === 'gem model carbon' ||
+      trimmed === 'set model=carbon' ||
+      trimmed === 'gem model=carbon' ||
+      trimmed === 'gem model gemini-4-carbon' ||
+      trimmed === 'gem model argon' ||
+      trimmed === 'set model=argon' ||
+      trimmed === 'gem model=argon' ||
+      trimmed === 'gem model gemini-4-argon'
+    ) {
+      config.model = 'carbon';
+    } else if (
+      trimmed === 'gem model neon' ||
+      trimmed === 'set model=neon' ||
+      trimmed === 'gem model=neon' ||
+      trimmed === 'gem model gemini-4-neon' ||
+      trimmed === 'gem model pro' ||
+      trimmed === 'set model=pro' ||
+      trimmed === 'gem model=pro' ||
+      trimmed === 'gem model pro-thinking' ||
+      trimmed === 'set model=pro-thinking' ||
+      trimmed === 'gem model=pro-thinking'
+    ) {
+      config.model = 'neon';
+    } else if (
+      trimmed === 'gem model hydrogen' ||
+      trimmed === 'set model=hydrogen' ||
+      trimmed === 'gem model=hydrogen' ||
+      trimmed === 'gem model gemini-4-hydrogen' ||
+      trimmed === 'gem model flash' ||
+      trimmed === 'set model=flash' ||
+      trimmed === 'gem model=flash' ||
+      trimmed === 'gem model flash-lite' ||
+      trimmed === 'set model=flash-lite' ||
+      trimmed === 'gem model=flash-lite'
+    ) {
+      config.model = 'hydrogen';
     }
 
     const keyMatch = parseKeyFromVimCommand(trimmed);
@@ -187,6 +216,11 @@ import {
   getActivePosixInfoForFilename,
   hasAnyPosixAuthorization,
   warmUpPosixHandlesCache,
+  reauthorizeMountedDirectory,
+  mountLiveDirectoryForPath,
+  promptAndBindSinglePosixFile,
+  isRunningInCrossOriginIframe,
+  classifyPosixTargetPath,
 } from './utils/posixFileSystem';
 import { MarkdownPreview } from './components/MarkdownPreview';
 import { TableOfContents } from './components/TableOfContents';
@@ -219,6 +253,13 @@ export default function App() {
   const [initialPosixModalPath, setInitialPosixModalPath] = useState<string>('');
   const [initialPosixModalAction, setInitialPosixModalAction] = useState<PosixActionType>('open');
   const [activePosixPath, setActivePosixPath] = useState<string | null>(null);
+  const [pendingPosixBar, setPendingPosixBar] = useState<{
+    path: string;
+    action: PosixActionType;
+    kind: 'reauth' | 'mount' | 'stale_snapshot' | 'iframe_blocked';
+    mountId?: string;
+    mountName?: string;
+  } | null>(null);
 
   // Virtual File System State
   const [fileHistory, setFileHistory] = useState<string[]>([]);
@@ -273,10 +314,10 @@ export default function App() {
       }
       
       const payload: any = { action, text: textToProcess, userApiKey, systemInstruction };
-      let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-      if (storedTier === 'flash-lite' || storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
-        storedTier = 'flash';
-        if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+      const rawStoredTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') : 'hydrogen';
+      const storedTier = normalizeAiModelTier(rawStoredTier);
+      if (typeof window !== 'undefined' && rawStoredTier !== storedTier) {
+        localStorage.setItem('livia_gemini_model', storedTier);
       }
       payload.modelTier = storedTier;
       if (action === 'translate') payload.targetLanguage = arg;
@@ -467,38 +508,39 @@ export default function App() {
     if (typeof window !== 'undefined') {
       warmUpPosixHandlesCache().catch(() => {});
       const savedModel = localStorage.getItem('livia_gemini_model');
-      if (savedModel && (savedModel === 'flash-lite' || savedModel.includes('2.5') || savedModel.includes('2.0') || savedModel.includes('1.5') || savedModel.includes('3.7'))) {
-        localStorage.setItem('livia_gemini_model', 'flash');
+      const normalizedModel = normalizeAiModelTier(savedModel);
+      if (savedModel !== normalizedModel) {
+        localStorage.setItem('livia_gemini_model', normalizedModel);
       }
       const savedDef = localStorage.getItem('livia_default_model');
-      if (savedDef && (savedDef === 'flash-lite' || savedDef.includes('2.5') || savedDef.includes('2.0') || savedDef.includes('1.5') || savedDef.includes('3.7'))) {
-        localStorage.setItem('livia_default_model', 'flash');
+      if (savedDef) {
+        const normalizedDef = normalizeAiModelTier(savedDef);
+        if (savedDef !== normalizedDef) {
+          localStorage.setItem('livia_default_model', normalizedDef);
+        }
       }
     }
   }, []);
 
-  const [activeAiModel, setActiveAiModel] = useState<'flash' | 'pro' | 'argon'>(() => {
+  const [activeAiModel, setActiveAiModel] = useState<AiModelTier>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('livia_gemini_model');
-      if (stored === 'pro' || stored === 'argon') return stored;
+      return normalizeAiModelTier(localStorage.getItem('livia_gemini_model'));
     }
-    return 'flash';
+    return 'hydrogen';
   });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const onModelChanged = (e: Event) => {
       const customEvent = e as CustomEvent<{ model?: string }>;
-      const m = customEvent.detail?.model || localStorage.getItem('livia_gemini_model');
-      if (m === 'flash' || m === 'pro' || m === 'argon') {
-        setActiveAiModel(m);
-      }
+      const m = normalizeAiModelTier(customEvent.detail?.model || localStorage.getItem('livia_gemini_model'));
+      setActiveAiModel(m);
     };
     window.addEventListener('livia-model-changed', onModelChanged);
     return () => window.removeEventListener('livia-model-changed', onModelChanged);
   }, []);
 
-  const handleSelectAiModel = (m: 'flash' | 'pro' | 'argon') => {
+  const handleSelectAiModel = (m: AiModelTier) => {
     setActiveAiModel(m);
     if (typeof window !== 'undefined') {
       localStorage.setItem('livia_gemini_model', m);
@@ -506,8 +548,8 @@ export default function App() {
     }
     showToast(
       lang === 'it' 
-        ? `Modello impostato: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'argon' ? 'Gemini 4 Argon (gemini-4-argon)' : 'Gemini 3.1 Pro'}`
-        : `Model set: ${m === 'flash' ? 'Gemini 3.8 Flash' : m === 'argon' ? 'Gemini 4 Argon (gemini-4-argon)' : 'Gemini 3.1 Pro'}`,
+        ? `Modello impostato: ${m === 'hydrogen' ? 'Gemini 4 Hydrogen (gemini-4-hydrogen)' : m === 'carbon' ? 'Gemini 4 Carbon (gemini-4-carbon)' : 'Gemini 4 Neon (gemini-4-neon)'}`
+        : `Model set: ${m === 'hydrogen' ? 'Gemini 4 Hydrogen (gemini-4-hydrogen)' : m === 'carbon' ? 'Gemini 4 Carbon (gemini-4-carbon)' : 'Gemini 4 Neon (gemini-4-neon)'}`,
       'info'
     );
   };
@@ -771,10 +813,9 @@ export default function App() {
       localStorage.setItem('livia_custom_gemini_key', config.apiKey);
     }
     if (config.model) {
-      localStorage.setItem('livia_gemini_model', config.model);
-      if (config.model === 'flash' || config.model === 'pro' || config.model === 'argon') {
-        setActiveAiModel(config.model);
-      }
+      const normalized = normalizeAiModelTier(config.model);
+      localStorage.setItem('livia_gemini_model', normalized);
+      setActiveAiModel(normalized);
     }
   };
 
@@ -1792,9 +1833,9 @@ export default function App() {
                   title={lang === 'it' ? 'Seleziona modello Gemini' : 'Select Gemini Model'}
                   id="ai-bar-model-select"
                 >
-                  <option value="flash">⚡ 3.8 Flash (Free Tier)</option>
-                  <option value="pro">🧠 3.1 Pro (Avanzato)</option>
-                  <option value="argon">🔥 4.0 Argon (Top / Ultimo)</option>
+                  <option value="hydrogen">⚡ 4.0 Hydrogen (Free Tier)</option>
+                  <option value="neon">🧠 4.0 Neon (Avanzato)</option>
+                  <option value="carbon">🔥 4.0 Carbon (Top / Ragionamento)</option>
                 </select>
               </div>
 
@@ -1830,6 +1871,148 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Slim 1-line inline POSIX bar for :e / :r / :tear (NO giant modal, NO Recenti!) */}
+          {pendingPosixBar && (
+            <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 border-b border-emerald-200 dark:border-emerald-800/60 text-xs shrink-0">
+              <div className="flex items-center gap-2 min-w-0 text-emerald-950 dark:text-emerald-100">
+                <Terminal size={13} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+                <span className="truncate font-mono text-[11px]">
+                  {pendingPosixBar.kind === 'reauth'
+                    ? lang === 'it'
+                      ? `Cartella "${pendingPosixBar.mountName}" già montata — conferma l'accesso per aprire ${pendingPosixBar.path}`
+                      : `Folder "${pendingPosixBar.mountName}" already mounted — confirm access to open ${pendingPosixBar.path}`
+                    : pendingPosixBar.kind === 'iframe_blocked'
+                    ? lang === 'it'
+                      ? `In questa vista embedded Chrome blocca l'accesso live a ${pendingPosixBar.path}. Apri in scheda autonoma per usare :e live.`
+                      : `Chrome blocks live folder access to ${pendingPosixBar.path} inside an embedded frame. Open in a standalone tab for live :e.`
+                    : pendingPosixBar.kind === 'stale_snapshot'
+                    ? lang === 'it'
+                      ? `"${pendingPosixBar.mountName}" era uno snapshot statico senza ${pendingPosixBar.path}. Autorizza la cartella Live per aprire tutti i file.`
+                      : `"${pendingPosixBar.mountName}" was a static snapshot missing ${pendingPosixBar.path}. Authorize it Live to access all files.`
+                    : lang === 'it'
+                    ? `Autorizza la cartella "${pendingPosixBar.mountName || classifyPosixTargetPath(pendingPosixBar.path).parentDirName}" una volta per aprire ${pendingPosixBar.path} con :e`
+                    : `Authorize folder "${pendingPosixBar.mountName || classifyPosixTargetPath(pendingPosixBar.path).parentDirName}" once to open ${pendingPosixBar.path} with :e`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                {pendingPosixBar.kind === 'reauth' && pendingPosixBar.mountId && (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const target = pendingPosixBar;
+                      const ok = await reauthorizeMountedDirectory(target.mountId!);
+                      if (ok) {
+                        setPendingPosixBar(null);
+                        try {
+                          await handleExecutePosixAction(target.path, target.action);
+                        } catch (e: any) {
+                          showToast(e?.message || (lang === 'it' ? `File non trovato: ${target.path}` : `File not found: ${target.path}`), 'error');
+                        }
+                      } else {
+                        showToast(lang === 'it' ? 'Permesso non concesso dal browser.' : 'Permission not granted by browser.', 'error');
+                      }
+                    }}
+                    className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold cursor-pointer transition-colors"
+                  >
+                    {lang === 'it' ? `Consenti "${pendingPosixBar.mountName}" e apri` : `Allow "${pendingPosixBar.mountName}" & open`}
+                  </button>
+                )}
+
+                {(pendingPosixBar.kind === 'mount' || pendingPosixBar.kind === 'stale_snapshot') && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const target = pendingPosixBar;
+                        try {
+                          const { meta, resolvedFile } = await mountLiveDirectoryForPath(target.path);
+                          setPendingPosixBar(null);
+                          if (resolvedFile) {
+                            await handleExecutePosixAction(target.path, target.action);
+                          } else {
+                            showToast(
+                              lang === 'it'
+                                ? `Cartella "${meta.name}" montata Live, ma "${target.path}" non esiste al suo interno.`
+                                : `Folder "${meta.name}" mounted Live, but "${target.path}" was not found inside it.`,
+                              'error'
+                            );
+                          }
+                        } catch (err: any) {
+                          if (err?.name === 'AbortError') return;
+                          if (err?.code === 'IFRAME_BLOCKED') {
+                            setPendingPosixBar({ ...target, kind: 'iframe_blocked' });
+                          } else {
+                            showToast(err?.message || (lang === 'it' ? 'Impossibile montare la cartella.' : 'Could not mount folder.'), 'error');
+                          }
+                        }
+                      }}
+                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold cursor-pointer transition-colors"
+                    >
+                      {lang === 'it'
+                        ? `Autorizza "${pendingPosixBar.mountName || classifyPosixTargetPath(pendingPosixBar.path).parentDirName}" (Live)`
+                        : `Authorize "${pendingPosixBar.mountName || classifyPosixTargetPath(pendingPosixBar.path).parentDirName}" (Live)`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const target = pendingPosixBar;
+                        try {
+                          const bound = await promptAndBindSinglePosixFile(target.path, { multiple: false });
+                          setPendingPosixBar(null);
+                          await handleExecutePosixAction(bound.posixPath, target.action);
+                        } catch (err: any) {
+                          if (err?.name === 'AbortError') return;
+                          showToast(err?.message || (lang === 'it' ? 'Selezione file annullata.' : 'File selection cancelled.'), 'info');
+                        }
+                      }}
+                      className="px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-[11px] font-medium cursor-pointer transition-colors"
+                    >
+                      {lang === 'it' ? 'Scegli file' : 'Pick file'}
+                    </button>
+                  </>
+                )}
+
+                {pendingPosixBar.kind === 'iframe_blocked' && (
+                  <>
+                    <a
+                      href={typeof window !== 'undefined' ? window.location.href : '#'}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold transition-colors"
+                    >
+                      {lang === 'it' ? 'Apri in scheda autonoma ↗' : 'Open standalone tab ↗'}
+                    </a>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const target = pendingPosixBar;
+                        try {
+                          const bound = await promptAndBindSinglePosixFile(target.path, { multiple: false });
+                          setPendingPosixBar(null);
+                          await handleExecutePosixAction(bound.posixPath, target.action);
+                        } catch (err: any) {
+                          if (err?.name === 'AbortError') return;
+                        }
+                      }}
+                      className="px-2 py-1 rounded bg-zinc-200 dark:bg-zinc-800 hover:bg-zinc-300 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 text-[11px] font-medium cursor-pointer transition-colors"
+                    >
+                      {lang === 'it' ? 'Importa file' : 'Import file'}
+                    </button>
+                  </>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => setPendingPosixBar(null)}
+                  className="p-1 text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
+                  title={lang === 'it' ? 'Chiudi' : 'Dismiss'}
+                >
+                  <X size={13} />
+                </button>
+              </div>
+            </div>
+          )}
 
                     <VimEditor
 
@@ -1969,27 +2152,32 @@ export default function App() {
                 return resolved.content;
               } catch (err: any) {
                 if (err?.code === 'PERMISSION_REAUTH_NEEDED') {
-                  setInitialPosixModalPath(cleanName);
-                  setInitialPosixModalAction('read');
-                  setIsPosixModalOpen(true);
-                  showToast(
-                    lang === 'it'
-                      ? `Clicca su "Riattiva accesso" per sbloccare "${err.mountName || 'la cartella'}" (1 clic, senza file browser).`
-                      : `Click "Re-enable access" to unlock "${err.mountName || 'folder'}" (1 click, no file browser).`,
-                    'info'
-                  );
+                  setPendingPosixBar({
+                    path: cleanName,
+                    action: 'read',
+                    kind: 'reauth',
+                    mountId: err.mountId,
+                    mountName: err.mountName,
+                  });
+                  return null;
+                }
+                if (err?.code === 'FALLBACK_STALE_OR_MISSING') {
+                  setPendingPosixBar({
+                    path: cleanName,
+                    action: 'read',
+                    kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'stale_snapshot',
+                    mountId: err.mountId,
+                    mountName: err.mountName,
+                  });
                   return null;
                 }
                 if (err?.code === 'NO_ROOT_AUTHORIZED' && pathLike) {
-                  setInitialPosixModalPath(cleanName);
-                  setInitialPosixModalAction('read');
-                  setIsPosixModalOpen(true);
-                  showToast(
-                    lang === 'it'
-                      ? 'Conferma il montaggio della cartella madre (o selezione file in $HOME) per leggere questo percorso POSIX.'
-                      : 'Confirm mounting the parent folder (or selecting files in $HOME) to read this POSIX path.',
-                    'info'
-                  );
+                  setPendingPosixBar({
+                    path: cleanName,
+                    action: 'read',
+                    kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'mount',
+                    mountName: classifyPosixTargetPath(cleanName).parentDirName,
+                  });
                   return null;
                 }
                 if (pathLike) {
@@ -2055,10 +2243,29 @@ export default function App() {
                   const resolved = await resolveAndReadPosixFile(cleanTarget, { autoPromptFilePicker: true });
                   return { found: true, name: resolved.filename, content: resolved.content };
                 } catch (err: any) {
-                  if (err?.code === 'PERMISSION_REAUTH_NEEDED' || err?.code === 'NO_ROOT_AUTHORIZED') {
-                    setInitialPosixModalPath(cleanTarget);
-                    setInitialPosixModalAction('tear');
-                    setIsPosixModalOpen(true);
+                  if (err?.code === 'PERMISSION_REAUTH_NEEDED') {
+                    setPendingPosixBar({
+                      path: cleanTarget,
+                      action: 'tear',
+                      kind: 'reauth',
+                      mountId: err.mountId,
+                      mountName: err.mountName,
+                    });
+                  } else if (err?.code === 'FALLBACK_STALE_OR_MISSING') {
+                    setPendingPosixBar({
+                      path: cleanTarget,
+                      action: 'tear',
+                      kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'stale_snapshot',
+                      mountId: err.mountId,
+                      mountName: err.mountName,
+                    });
+                  } else if (err?.code === 'NO_ROOT_AUTHORIZED') {
+                    setPendingPosixBar({
+                      path: cleanTarget,
+                      action: 'tear',
+                      kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'mount',
+                      mountName: classifyPosixTargetPath(cleanTarget).parentDirName,
+                    });
                   }
                   return { found: false, name: cleanTarget };
                 }
@@ -2175,42 +2382,48 @@ export default function App() {
                   setFormat(resolved.format);
                   setActivePosixPath(resolved.posixPath);
                   setActiveDriveFileId(null);
+                  setPendingPosixBar(null);
                   setFileSessionId(prev => prev + 1);
                   showToast(
                     lang === 'it'
                       ? resolved.mountedDirName
-                        ? `Aperto "${resolved.filename}" (${resolved.posixPath}) — cartella madre "${resolved.mountedDirName}" attiva.`
-                        : `Aperto "${resolved.filename}" da percorso POSIX (${resolved.posixPath}).`
+                        ? `Aperto "${resolved.filename}" (${resolved.posixPath}) — cartella "${resolved.mountedDirName}" attiva.`
+                        : `Aperto "${resolved.filename}" (${resolved.posixPath}).`
                       : resolved.mountedDirName
-                      ? `Opened "${resolved.filename}" (${resolved.posixPath}) — parent folder "${resolved.mountedDirName}" active.`
-                      : `Opened "${resolved.filename}" from POSIX path (${resolved.posixPath}).`,
+                      ? `Opened "${resolved.filename}" (${resolved.posixPath}) — folder "${resolved.mountedDirName}" active.`
+                      : `Opened "${resolved.filename}" (${resolved.posixPath}).`,
                     'info'
                   );
                   return { found: true, name: resolved.filename };
                 } catch (err: any) {
                   if (err?.code === 'PERMISSION_REAUTH_NEEDED') {
-                    setInitialPosixModalPath(cleanTarget);
-                    setInitialPosixModalAction('open');
-                    setIsPosixModalOpen(true);
-                    showToast(
-                      lang === 'it'
-                        ? `Clicca su "Riattiva accesso" per sbloccare "${err.mountName || 'la cartella'}" (1 clic, senza file browser).`
-                        : `Click "Re-enable access" to unlock "${err.mountName || 'folder'}" (1 click, no file browser).`,
-                      'info'
-                    );
+                    setPendingPosixBar({
+                      path: cleanTarget,
+                      action: 'open',
+                      kind: 'reauth',
+                      mountId: err.mountId,
+                      mountName: err.mountName,
+                    });
+                    return { found: false, name: baseName };
+                  }
+                  if (err?.code === 'FALLBACK_STALE_OR_MISSING') {
+                    setPendingPosixBar({
+                      path: cleanTarget,
+                      action: 'open',
+                      kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'stale_snapshot',
+                      mountId: err.mountId,
+                      mountName: err.mountName,
+                    });
                     return { found: false, name: baseName };
                   }
                   if (pathLike) {
                     if (err?.code === 'NO_ROOT_AUTHORIZED') {
-                      setInitialPosixModalPath(cleanTarget);
-                      setInitialPosixModalAction('open');
-                      setIsPosixModalOpen(true);
-                      showToast(
-                        lang === 'it'
-                          ? 'Conferma il montaggio della cartella madre nella finestra POSIX per sbloccare tutti i suoi file.'
-                          : 'Confirm mounting the parent folder in the POSIX window to unlock all its files.',
-                        'info'
-                      );
+                      setPendingPosixBar({
+                        path: cleanTarget,
+                        action: 'open',
+                        kind: isRunningInCrossOriginIframe() ? 'iframe_blocked' : 'mount',
+                        mountName: classifyPosixTargetPath(cleanTarget).parentDirName,
+                      });
                       return { found: false, name: baseName };
                     } else {
                       showToast(err?.message || (lang === 'it' ? `File POSIX non trovato: ${cleanTarget}` : `POSIX file not found: ${cleanTarget}`), 'error');
@@ -3239,9 +3452,9 @@ export default function App() {
                         <strong>{lang === 'it' ? 'Modelli Disponibili:' : 'Available Models:'}</strong>
                       </p>
                       <ul className="space-y-1 list-disc pl-4">
-                        <li><strong>⚡ Gemini 3.8 Flash</strong> (<code>gemini-3.8-flash</code>): {lang === 'it' ? 'Veloce e ottimizzato per il Free Tier.' : 'Fast and optimized for the Free Tier.'}</li>
-                        <li><strong>🧠 Gemini 3.1 Pro</strong> (<code>gemini-3.1-pro-preview</code>): {lang === 'it' ? 'Ragionamento avanzato e testi complessi.' : 'Advanced reasoning and complex texts.'}</li>
-                        <li><strong>🔥 Gemini 4 Argon</strong> (<code>gemini-4-argon</code>): {lang === 'it' ? 'Ultimo modello di punta ad altissima capacità.' : 'Latest flagship model with top capability.'}</li>
+                        <li><strong>⚡ Gemini 4 Hydrogen</strong> (<code>gemini-4-hydrogen</code>): {lang === 'it' ? 'Veloce e ottimizzato per il Free Tier.' : 'Fast and optimized for the Free Tier.'}</li>
+                        <li><strong>🧠 Gemini 4 Neon</strong> (<code>gemini-4-neon</code>): {lang === 'it' ? 'Testi complessi, codice e analisi STEM avanzata.' : 'Complex text, coding, and advanced STEM analysis.'}</li>
+                        <li><strong>🔥 Gemini 4 Carbon</strong> (<code>gemini-4-carbon</code>): {lang === 'it' ? 'Modello ammiraglia per ragionamento profondo e architettura.' : 'Flagship model for deep reasoning and architecture.'}</li>
                       </ul>
                       <p className="mt-2">
                         <strong>{lang === 'it' ? 'Gemini Gems (Profili AI):' : 'Gemini Gems (AI Profiles):'}</strong><br />
@@ -3254,7 +3467,7 @@ export default function App() {
                       </p>
                       <ul className="space-y-1 list-disc pl-4">
                         <li><code>:ai &lt;prompt&gt;</code> / <code>:gem &lt;prompt&gt;</code> {lang === 'it' ? 'Applica istruzione al testo' : 'Apply instruction to text'}</li>
-                        <li><code>:gem model argon|pro|flash</code> {lang === 'it' ? 'Cambia modello AI attivo' : 'Switch active AI model'}</li>
+                        <li><code>:gem model hydrogen|neon|carbon</code> {lang === 'it' ? 'Cambia modello AI attivo' : 'Switch active AI model'}</li>
                         <li><code>:tr &lt;lang&gt;</code> {lang === 'it' ? 'Traduci (es. :tr it)' : 'Translate (e.g. :tr it)'}</li>
                         <li><code>:lat &lt;tema&gt;</code> {lang === 'it' ? 'Testo segnaposto (es. standard)' : 'Placeholder (e.g. standard)'}</li>
                       </ul>

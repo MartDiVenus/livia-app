@@ -1,11 +1,44 @@
 import { GoogleGenAI } from '@google/genai';
 
+export type AiModelTier = 'hydrogen' | 'neon' | 'carbon';
+
+export function normalizeAiModelTier(raw?: string | null): AiModelTier {
+  const val = (raw || '').trim().toLowerCase();
+  if (
+    val === 'carbon' ||
+    val === 'gemini-4-carbon' ||
+    val === '4-carbon' ||
+    val === 'argon' ||
+    val === 'gemini-4-argon' ||
+    val === '4-argon'
+  ) {
+    return 'carbon';
+  }
+  if (
+    val === 'neon' ||
+    val === 'gemini-4-neon' ||
+    val === '4-neon' ||
+    val === 'pro' ||
+    val === 'pro-thinking' ||
+    val.includes('3.1-pro')
+  ) {
+    return 'neon';
+  }
+  return 'hydrogen';
+}
+
+export function getAiModelDisplayName(tier: AiModelTier): string {
+  if (tier === 'carbon') return 'Gemini 4 Carbon (gemini-4-carbon)';
+  if (tier === 'neon') return 'Gemini 4 Neon (gemini-4-neon)';
+  return 'Gemini 4 Hydrogen (gemini-4-hydrogen)';
+}
+
 export async function testGeminiConnection(apiKey: string, lang: string = 'it'): Promise<any> {
   if (apiKey) {
     try {
       const client = new GoogleGenAI({ apiKey });
-      const testModels = ["gemini-3.8-flash", "gemini-4-argon", "gemini-flash-latest"];
-      let activeModel = "gemini-3.8-flash";
+      const testModels = ["gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"];
+      let activeModel = "gemini-4-hydrogen";
       let succeeded = false;
       let lastErr: any = null;
       for (const m of testModels) {
@@ -59,18 +92,20 @@ export async function generateGeminiContent(payload: any, lang: string = 'it'): 
       
       const { action, text, targetLanguage, prompt, theme, modelTier, systemInstruction } = payload;
 
-      let tier = (modelTier || 'flash').trim().toLowerCase();
-      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7') || tier === 'flash-lite') {
-        tier = 'flash';
-      }
+      const rawTier = (modelTier || 'hydrogen').trim().toLowerCase();
+      const normalizedTier = normalizeAiModelTier(rawTier);
 
-      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-flash-latest"];
-      if (tier === 'argon' || tier === 'gemini-4-argon' || tier === '4-argon') {
-        modelsToTry = ["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-flash-latest"];
-      } else if (tier === 'pro' || tier === 'pro-thinking') {
-        modelsToTry = ["gemini-3.1-pro-preview", "gemini-4-argon", "gemini-3.8-flash", "gemini-flash-latest"];
-      } else if (tier.startsWith('gemini-')) {
-        modelsToTry = [tier, "gemini-3.8-flash", "gemini-flash-latest"];
+      let modelsToTry: string[] = ["gemini-4-hydrogen"];
+      if (normalizedTier === 'carbon') {
+        modelsToTry = ["gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen"];
+      } else if (normalizedTier === 'neon') {
+        modelsToTry = ["gemini-4-neon", "gemini-4-hydrogen"];
+      } else if (
+        rawTier.startsWith('gemini-4-') &&
+        rawTier !== 'gemini-4-argon' &&
+        rawTier !== 'gemini-4-hydrogen'
+      ) {
+        modelsToTry = [rawTier, "gemini-4-hydrogen"];
       }
 
       let contents = "";
@@ -87,7 +122,6 @@ export async function generateGeminiContent(payload: any, lang: string = 'it'): 
         const searchTheme = theme && theme.trim() !== 'random' ? `themed around "${theme}"` : "completely random";
         const seed = Math.floor(Math.random() * 1000000);
         contents = `Provide a famous or elegant Latin locution/phrase ${searchTheme}. \nThis is random execution #${seed}. Please avoid the most common mainstream ones (like Carpe Diem, Veni Vidi Vici, or Alea Iacta Est) unless specifically requested. Choose something highly unique, profound, or rare from Latin literature, law, or philosophy.\n\nReturn the output in Italian, formatted exactly as a clean block of lines as follows:\nLine 1: The Latin phrase (e.g., "Audentes fortuna iuvat")\nLine 2: The Italian translation (e.g., "La fortuna aiuta gli audaci")\nLine 3: Elegant, short context, historical origin, or philosophical commentary (max 2 sentences).\n\nMake sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`;
-        configOverrides = { temperature: 0.95 };
       } else {
         throw new Error("Azione non supportata.");
       }

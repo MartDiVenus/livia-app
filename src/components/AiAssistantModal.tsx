@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { Sparkles, X, Languages, BookOpen, Send, Check, Settings, Bot, ArrowRight, Loader2, AlertCircle, Quote, Zap, Cpu, RefreshCw, ExternalLink, Key, CheckCircle2, GripHorizontal } from 'lucide-react';
-import { testGeminiConnection } from '../utils/geminiClient';
+import { testGeminiConnection, AiModelTier, normalizeAiModelTier } from '../utils/geminiClient';
 import { AiProfile } from '../types';
 
 export interface AiAssistantModalProps {
@@ -16,13 +16,13 @@ export interface AiAssistantModalProps {
   onSelectProfile: (id: string | null) => void;
   onOpenSettingsModal?: () => void;
   onOpenAiProfilesModal?: () => void;
-  selectedModel?: 'flash' | 'pro' | 'argon';
-  onSelectModel?: (model: 'flash' | 'pro' | 'argon') => void;
+  selectedModel?: AiModelTier;
+  onSelectModel?: (model: AiModelTier) => void;
   onExecute: (
     action: 'prompt' | 'translate' | 'latin',
     arg: string,
     targetMode: 'selection' | 'document' | 'cursor',
-    modelTier?: 'flash' | 'pro' | 'argon'
+    modelTier?: AiModelTier
   ) => Promise<boolean>;
 }
 
@@ -53,12 +53,11 @@ export function AiAssistantModal({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Local model state synchronized with localStorage
-  const [model, setModel] = useState<'flash' | 'pro' | 'argon'>(() => {
+  const [model, setModel] = useState<AiModelTier>(() => {
     if (typeof window !== 'undefined') {
-      const stored = localStorage.getItem('livia_gemini_model');
-      if (stored === 'argon' || stored === 'pro') return stored;
+      return normalizeAiModelTier(localStorage.getItem('livia_gemini_model'));
     }
-    return externalModel || 'flash';
+    return externalModel || 'hydrogen';
   });
 
   // Diagnostic state
@@ -120,13 +119,9 @@ export function AiAssistantModal({
       setTestResult(null);
       setIsLoading(false);
       if (typeof window !== 'undefined') {
-        const stored = localStorage.getItem('livia_gemini_model');
-        if (stored === 'argon' || stored === 'pro' || stored === 'flash') {
-          setModel(stored);
-        } else {
-          setModel('flash');
-          localStorage.setItem('livia_gemini_model', 'flash');
-        }
+        const normalized = normalizeAiModelTier(localStorage.getItem('livia_gemini_model'));
+        setModel(normalized);
+        localStorage.setItem('livia_gemini_model', normalized);
         const key = localStorage.getItem('livia_custom_gemini_key');
         setHasCustomKey(!!(key && key.trim().length > 0));
       }
@@ -138,7 +133,7 @@ export function AiAssistantModal({
     }
   }, [isOpen, hasSelection]);
 
-  const handleModelChange = (newModel: 'flash' | 'pro' | 'argon') => {
+  const handleModelChange = (newModel: AiModelTier) => {
     setModel(newModel);
     if (typeof window !== 'undefined') {
       localStorage.setItem('livia_gemini_model', newModel);
@@ -358,70 +353,70 @@ export function AiAssistantModal({
           <div className="grid grid-cols-3 gap-1.5" id="ai-model-selector-group">
             <button
               type="button"
-              onClick={() => handleModelChange('flash')}
+              onClick={() => handleModelChange('hydrogen')}
               className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                model === 'flash'
+                model === 'hydrogen'
                   ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-500 dark:border-emerald-500/60 ring-1 ring-emerald-500/30'
                   : 'bg-white dark:bg-[#0E1116] border-gray-200 dark:border-[#2C313C] hover:bg-gray-100 dark:hover:bg-zinc-800/80'
               }`}
             >
               <div className="flex items-center justify-between w-full">
                 <span className={`text-[11px] font-bold flex items-center gap-1 ${
-                  model === 'flash' ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-800 dark:text-zinc-200'
+                  model === 'hydrogen' ? 'text-emerald-700 dark:text-emerald-300' : 'text-gray-800 dark:text-zinc-200'
                 }`}>
                   <Sparkles size={11} className="text-emerald-500 shrink-0" />
-                  <span>3.8 Flash</span>
+                  <span>4.0 Hydrogen</span>
                 </span>
-                {model === 'flash' && <Check size={12} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                {model === 'hydrogen' && <Check size={12} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
               </div>
               <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
-                {lang === 'it' ? 'Consigliato (Free Tier)' : 'Recommended (Free)'}
+                {lang === 'it' ? 'Veloce (Free Tier)' : 'Fast (Free Tier)'}
               </span>
             </button>
 
             <button
               type="button"
-              onClick={() => handleModelChange('pro')}
+              onClick={() => handleModelChange('neon')}
               className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                model === 'pro'
+                model === 'neon'
                   ? 'bg-indigo-50 dark:bg-indigo-950/40 border-indigo-500 dark:border-indigo-500/60 ring-1 ring-indigo-500/30'
                   : 'bg-white dark:bg-[#0E1116] border-gray-200 dark:border-[#2C313C] hover:bg-gray-100 dark:hover:bg-zinc-800/80'
               }`}
             >
               <div className="flex items-center justify-between w-full">
                 <span className={`text-[11px] font-bold flex items-center gap-1 ${
-                  model === 'pro' ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-800 dark:text-zinc-200'
+                  model === 'neon' ? 'text-indigo-700 dark:text-indigo-300' : 'text-gray-800 dark:text-zinc-200'
                 }`}>
                   <Cpu size={11} className="text-indigo-500 shrink-0" />
-                  <span>3.1 Pro</span>
+                  <span>4.0 Neon</span>
                 </span>
-                {model === 'pro' && <Check size={12} className="text-indigo-600 dark:text-indigo-400 shrink-0" />}
+                {model === 'neon' && <Check size={12} className="text-indigo-600 dark:text-indigo-400 shrink-0" />}
               </div>
               <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
-                {lang === 'it' ? 'Ragionamento avanzato' : 'Advanced reasoning'}
+                {lang === 'it' ? 'Avanzato / Codice' : 'Advanced / Coding'}
               </span>
             </button>
 
             <button
               type="button"
-              onClick={() => handleModelChange('argon')}
+              onClick={() => handleModelChange('carbon')}
               className={`p-1.5 sm:p-2 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                model === 'argon'
+                model === 'carbon'
                   ? 'bg-amber-50 dark:bg-amber-950/40 border-amber-500 dark:border-amber-500/60 ring-1 ring-amber-500/30'
                   : 'bg-white dark:bg-[#0E1116] border-gray-200 dark:border-[#2C313C] hover:bg-gray-100 dark:hover:bg-zinc-800/80'
               }`}
             >
               <div className="flex items-center justify-between w-full">
                 <span className={`text-[11px] font-bold flex items-center gap-1 ${
-                  model === 'argon' ? 'text-amber-700 dark:text-amber-300' : 'text-gray-800 dark:text-zinc-200'
+                  model === 'carbon' ? 'text-amber-700 dark:text-amber-300' : 'text-gray-800 dark:text-zinc-200'
                 }`}>
                   <Zap size={11} className="text-amber-500 shrink-0" />
-                  <span>4.0 Argon</span>
+                  <span>4.0 Carbon</span>
                 </span>
-                {model === 'argon' && <Check size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />}
+                {model === 'carbon' && <Check size={12} className="text-amber-600 dark:text-amber-400 shrink-0" />}
               </div>
               <span className="text-[9px] text-gray-500 dark:text-zinc-400 mt-0.5 line-clamp-1">
-                {lang === 'it' ? 'Top / Ultimo Modello' : 'Top / Latest (Argon)'}
+                {lang === 'it' ? 'Top / Ragionamento' : 'Top / Deep Reasoning'}
               </span>
             </button>
           </div>
@@ -784,8 +779,8 @@ export function AiAssistantModal({
               <span>💡</span>
               <span>
                 {lang === 'it'
-                  ? 'Comandi Vim: :ai [testo], :tr [lingua], :lat [tema], :gem model [flash|pro|argon]'
-                  : 'Vim commands: :ai [text], :tr [lang], :lat [theme], :gem model [flash|pro|argon]'}
+                  ? 'Comandi Vim: :ai [testo], :tr [lingua], :lat [tema], :gem model [hydrogen|neon|carbon]'
+                  : 'Vim commands: :ai [text], :tr [lang], :lat [theme], :gem model [hydrogen|neon|carbon]'}
               </span>
             </div>
             {onOpenAiProfilesModal && (

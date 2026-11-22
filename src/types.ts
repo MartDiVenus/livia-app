@@ -145,9 +145,9 @@ Google Gemini™ AI Commands & AI Models:
 - :gem <instructions>: Process document or visual selection with Google Gemini™ AI
                        (e.g., :gem summarize in 3 points, :gem proofread grammar,
                        :gem optimize this code)
-- :gem model flash   : Set Gemini™ 3.8 Flash model (Fast, free tier)
-- :gem model pro     : Set Gemini™ 3.1 Pro model (Advanced reasoning for complex tasks)
-- :gem model argon   : Set Gemini™ 4 Argon model (Latest flagship model: gemini-4-argon)
+- :gem model hydrogen: Set Gemini™ 4 Hydrogen model (Fast, free tier: gemini-4-hydrogen)
+- :gem model neon    : Set Gemini™ 4 Neon model (Advanced text & coding: gemini-4-neon)
+- :gem model carbon  : Set Gemini™ 4 Carbon model (Flagship deep reasoning: gemini-4-carbon)
 - :gem which model   : Show the currently active Gemini™ model
 
 * Personal API Key on Google AI Studio™ (aistudio.google.com/app/apikey):
@@ -209,7 +209,7 @@ Example .lvarc configuration:
   set wrap
   set syntax=on
   set textwidth=80
-  gem model flash
+  gem model hydrogen
   set folding=on
   set fontsize=12
   set theme=dark
@@ -578,9 +578,9 @@ Google Gemini™ AI & Modelli IA:
 - :gem <istruzioni>  : Elabora il documento o la selezione con Google Gemini™ AI
                        (es: :gem riassumi in 3 punti, :gem correggi grammatica,
                        :gem ottimizza questo codice)
-- :gem model flash   : Imposta modello Gemini™ 3.8 Flash (Veloce, tier gratuito)
-- :gem model pro     : Imposta modello Gemini™ 3.1 Pro (Ragionamento avanzato)
-- :gem model argon   : Imposta l'ultimo modello Gemini™ 4 Argon (gemini-4-argon, Top)
+- :gem model hydrogen: Imposta modello Gemini™ 4 Hydrogen (Veloce, tier gratuito: gemini-4-hydrogen)
+- :gem model neon    : Imposta modello Gemini™ 4 Neon (Testi complessi e codice: gemini-4-neon)
+- :gem model carbon  : Imposta modello Gemini™ 4 Carbon (Ragionamento profondo: gemini-4-carbon)
 - :gem which model   : Mostra il modello Gemini™ attualmente in uso
 
 * API Key Personale Google AI Studio™ (aistudio.google.com/app/apikey):
@@ -601,7 +601,7 @@ Google Gemini™ AI & Modelli IA:
   - Piani & Crediti (Free Tier vs Pay-As-You-Go):
     • Free Tier API (Google AI Studio™): 100% gratuito per tutti gli account Google ($0, nessuna carta di credito).
       Include già una finestra di contesto fino a 2 Milioni di token (ideale per grandi file DOCX, PDF e codice)
-      con quota riservata sia per Flash che per Gemini Pro.
+      con quota riservata per Gemini 4 Hydrogen.
     • Pay-As-You-Go (Google Cloud Billing™): Opzionale per sviluppatori ed aziende che necessitano di pipeline
       di chiamate API automatizzate ad alta frequenza senza limiti di rate. Non necessario per l'uso normale.
     • Abbonamenti Consumer (Google One™ AI Premium / Gemini Advanced™): Riguardano unicamente la chat web Gemini™
@@ -653,7 +653,7 @@ Esempio di configurazione .lvarc:
   set wrap
   set syntax=on
   set textwidth=80
-  gem model flash
+  gem model hydrogen
   set folding=on
   set fontsize=12
   set theme=dark
@@ -2256,8 +2256,8 @@ set syntax=on
 # Line width for 'gq' reformatting (set textwidth=80 or set tw=80)
 set textwidth=80
 
-# Google AI Gemini Model (gem model flash / gem model pro / gem model argon)
-gem model flash
+# Google AI Gemini Model (gem model hydrogen / gem model neon / gem model carbon)
+gem model hydrogen
 
 # Code Folding for grouping sections (set folding=on / set folding=off)
 set folding=on
@@ -2291,8 +2291,8 @@ set syntax=on
 # Larghezza riga per riformattazione 'gq' (set textwidth=80 o set tw=80)
 set textwidth=80
 
-# Modello Google AI Gemini (gem model flash / gem model pro / gem model argon)
-gem model flash
+# Modello Google AI Gemini (gem model hydrogen / gem model neon / gem model carbon)
+gem model hydrogen
 
 # Code Folding per raggruppare sezioni (set folding=on / set folding=off)
 set folding=on
@@ -2313,20 +2313,20 @@ set lang=it
 export const HELP_AI_TEMPLATE: FileData = {
   name: "help_ai.md",
   format: "md",
-  content: `# Guida Gemini AI, Modelli (4.0 Argon / 3.8 Flash / 3.1 Pro) & Profili in LiViA
+  content: `# Guida Gemini AI, Modelli (4.0 Hydrogen / 4.0 Neon / 4.0 Carbon) & Profili in LiViA
 
-LiViA integra profondamente i modelli Google Gemini di ultima generazione per aiutarti a scrivere, tradurre, programmare e modificare il testo.
+LiViA integra profondamente i modelli Google Gemini 4 di ultima generazione per aiutarti a scrivere, tradurre, programmare e modificare il testo.
 
 ## 1. Modelli Google Gemini Supportati
 Puoi cambiare modello in qualsiasi momento dal selettore nella barra in alto, dalla finestra Assistente IA, dal pulsante nella barra di stato in basso, dalle Impostazioni o tramite comando Vim:
-- **⚡ Gemini 3.8 Flash (\`gemini-3.8-flash\`)**: Veloce, reattivo e ottimizzato per il Free Tier (\`:gem model flash\`).
-- **🧠 Gemini 3.1 Pro (\`gemini-3.1-pro-preview\`)**: Ragionamento avanzato per analisi approfondite (\`:gem model pro\`).
-- **🔥 Gemini 4 Argon (\`gemini-4-argon\`)**: L'ultimo modello di punta di nuova generazione per compiti complessi, codice e scrittura creativa (\`:gem model argon\`).
+- **⚡ Gemini 4 Hydrogen (\`gemini-4-hydrogen\`)**: Veloce, reattivo e ottimizzato per il Free Tier (\`:gem model hydrogen\`).
+- **🧠 Gemini 4 Neon (\`gemini-4-neon\`)**: Testi complessi, codice e analisi STEM avanzata (\`:gem model neon\`).
+- **🔥 Gemini 4 Carbon (\`gemini-4-carbon\`)**: Modello ammiraglia per ragionamento profondo, architettura e debugging complesso (\`:gem model carbon\`).
 
 ## 2. Comandi Rapidi Vim (AI)
 In modalità comando (premi Esc), puoi usare:
 - \`:ai <prompt>\` o \`:gem <prompt>\` -> Analizza o elabora il documento usando il prompt (es. \`:ai riassumi il testo\`).
-- \`:gem model argon|pro|flash\` -> Cambia il modello AI predefinito.
+- \`:gem model hydrogen|neon|carbon\` -> Cambia il modello AI predefinito.
 - \`:gem which model\` -> Mostra il modello attualmente attivo.
 - \`:tr <lingua>\` -> Traduce l'intero documento o la selezione (es. \`:tr en\`, \`:tr it\`).
 - \`:lat <tema>\` -> Genera una citazione latina con traduzione o testo segnaposto (es. \`:lat standard\`, \`:lat tempo\`).
@@ -2345,20 +2345,20 @@ Quando selezioni un profilo dal menu a tendina sopra l'editor, l'istruzione di s
 export const HELP_AI_TEMPLATE_EN: FileData = {
   name: "help_ai.md",
   format: "md",
-  content: `# Guide to Gemini AI, Models (4.0 Argon / 3.8 Flash / 3.1 Pro) & Profiles in LiViA
+  content: `# Guide to Gemini AI, Models (4.0 Hydrogen / 4.0 Neon / 4.0 Carbon) & Profiles in LiViA
 
-LiViA deeply integrates latest-generation Google Gemini models to help you write, translate, code, and edit text.
+LiViA deeply integrates latest-generation Google Gemini 4 models to help you write, translate, code, and edit text.
 
 ## 1. Supported Google Gemini Models
 You can switch models anytime from the top bar selector, the AI Assistant modal, the bottom status bar toggle, Settings, or via Vim command:
-- **⚡ Gemini 3.8 Flash (\`gemini-3.8-flash\`)**: Fast, responsive, and optimized for the Free Tier (\`:gem model flash\`).
-- **🧠 Gemini 3.1 Pro (\`gemini-3.1-pro-preview\`)**: Advanced reasoning for in-depth analysis (\`:gem model pro\`).
-- **🔥 Gemini 4 Argon (\`gemini-4-argon\`)**: Latest flagship next-generation model for complex tasks, coding, and writing (\`:gem model argon\`).
+- **⚡ Gemini 4 Hydrogen (\`gemini-4-hydrogen\`)**: Fast, responsive, and optimized for the Free Tier (\`:gem model hydrogen\`).
+- **🧠 Gemini 4 Neon (\`gemini-4-neon\`)**: Complex text, coding, and advanced STEM analysis (\`:gem model neon\`).
+- **🔥 Gemini 4 Carbon (\`gemini-4-carbon\`)**: Flagship model for deep reasoning, architecture, and complex debugging (\`:gem model carbon\`).
 
 ## 2. Quick Vim Commands (AI)
 In command mode (press Esc), you can use:
 - \`:ai <prompt>\` or \`:gem <prompt>\` -> Analyzes or processes the document using the prompt (e.g. \`:ai summarize this text\`).
-- \`:gem model argon|pro|flash\` -> Switches the active AI model.
+- \`:gem model hydrogen|neon|carbon\` -> Switches the active AI model.
 - \`:gem which model\` -> Displays the currently active model.
 - \`:tr <language>\` -> Translates the entire document or selection (e.g. \`:tr en\`, \`:tr it\`).
 - \`:lat <theme>\` -> Generates a Latin quote with translation or placeholder text (e.g. \`:lat standard\`, \`:lat time\`).

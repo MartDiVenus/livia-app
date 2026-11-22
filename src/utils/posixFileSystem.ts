@@ -210,6 +210,25 @@ async function idbDelete(key: string): Promise<void> {
   });
 }
 
+async function idbGetAllEntries(): Promise<Array<{ key: string; value: any }>> {
+  const db = await openPosixDB();
+  return new Promise<Array<{ key: string; value: any }>>((resolve, reject) => {
+    const entries: Array<{ key: string; value: any }> = [];
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const req = tx.objectStore(STORE_NAME).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (cursor) {
+        entries.push({ key: String(cursor.key), value: cursor.value });
+        cursor.continue();
+      } else {
+        resolve(entries);
+      }
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
 function sanitizeIdFragment(raw: string): string {
   return (
     raw
@@ -800,6 +819,7 @@ export async function getDirectoryHandleForMount(meta: MountedPosixDirectoryMeta
       const handleByName = await idbGet(`${DIR_HANDLE_PREFIX}${byNameId}`);
       if (handleByName) {
         cachedDirHandlesById.set(meta.id, handleByName);
+        await idbPut(`${DIR_HANDLE_PREFIX}${meta.id}`, handleByName).catch(() => {});
         return handleByName;
       }
     }
@@ -807,11 +827,27 @@ export async function getDirectoryHandleForMount(meta: MountedPosixDirectoryMeta
     if (
       rootHandle &&
       (meta.id === 'legacy_root' ||
-        (rootHandle.name && rootHandle.name.toLowerCase() === meta.name.toLowerCase()))
+        (rootHandle.name && folderNamesMatch(rootHandle.name, meta.name)))
     ) {
       cachedDirHandlesById.set(meta.id, rootHandle);
       await idbPut(`${DIR_HANDLE_PREFIX}${meta.id}`, rootHandle).catch(() => {});
       return rootHandle;
+    }
+
+    // Fallback scan across all persisted dir_mount:* entries in case mount ID changed across versions
+    const allEntries = await idbGetAllEntries().catch(() => []);
+    for (const entry of allEntries) {
+      if (
+        (entry.key.startsWith(DIR_HANDLE_PREFIX) || entry.key === ROOT_HANDLE_KEY) &&
+        entry.value &&
+        typeof entry.value.getFileHandle === 'function' &&
+        entry.value.name &&
+        folderNamesMatch(entry.value.name, meta.name)
+      ) {
+        cachedDirHandlesById.set(meta.id, entry.value);
+        await idbPut(`${DIR_HANDLE_PREFIX}${meta.id}`, entry.value).catch(() => {});
+        return entry.value;
+      }
     }
   } catch {
     // ignore
@@ -1179,12 +1215,117 @@ export function promptUniversalDirectoryMount(
 }
 
 /**
- * Mounts the parent directory of a target POSIX path:
- * - If the target folder is `$HOME/Scaricati` (`Downloads`) or in a cross-origin iframe where Chromium blocks
- *   `showDirectoryPicker`, it synchronously opens the Universal Directory Selector (`webkitdirectory`) with zero error!
- * - Otherwise, it calls `showDirectoryPicker` synchronously with `mode: 'read'` (so folders with lower/read-only
- *   permissions are accepted just like in the original version!) and `startIn` computed synchronously.
+ * Directly mounts a LIVE folder via `window.showDirectoryPicker` (NEVER falls back to `<input webkitdirectory>`
+ * which opens Chrome Linux's unusable "Recenti" folder dialog).
+ * Throws `{ code: 'IFRAME_BLOCKED' }` if Chromium blocks the picker inside a cross-origin iframe.
  */
+export async function mountLiveDirectoryForPath(
+  rawTargetPath?: string
+): Promise<{ meta: MountedPosixDirectoryMeta; resolvedFile: PosixResolvedFile | null }> {
+  const normTarget = rawTargetPath ? normalizePosixPath(rawTargetPath) : '';
+  if (normTarget) {
+    detectAndSaveHomePrefix(normTarget);
+  }
+  const win = typeof window !== 'undefined' ? (window as any) : null;
+  if (!win || typeof win.showDirectoryPicker !== 'function') {
+    const err = new Error('Il browser non supporta showDirectoryPicker per il montaggio live.');
+    (err as any).code = 'PICKER_UNSUPPORTED';
+    throw err;
+  }
+
+  const startIn = resolveBestStartInSync(normTarget || getDetectedHomePrefix() || '~');
+  let dirHandle: any = null;
+  try {
+    dirHandle = await win.showDirectoryPicker({
+      mode: 'read',
+      startIn,
+    });
+  } catch (err: any) {
+    if (err?.name === 'AbortError') {
+      throw err;
+    }
+    if (err instanceof TypeError) {
+      dirHandle = await win.showDirectoryPicker({
+        mode: 'read',
+        startIn: 'documents',
+      });
+    } else if (
+      err?.name === 'SecurityError' ||
+      String(err?.message || '').toLowerCase().includes('cross origin') ||
+      isRunningInCrossOriginIframe()
+    ) {
+      const iframeErr = new Error(
+        'Chrome blocca l\'accesso live alle cartelle dentro un iframe embedded. Apri LiViA in una scheda autonoma.'
+      );
+      (iframeErr as any).code = 'IFRAME_BLOCKED';
+      throw iframeErr;
+    } else {
+      throw err;
+    }
+  }
+
+  if (!dirHandle) {
+    const abortErr = new Error('Selezione cartella annullata.');
+    (abortErr as any).name = 'AbortError';
+    throw abortErr;
+  }
+
+  await ensureHandlePermission(dirHandle, 'read').catch(() => {});
+  const meta = await addMountedDirectoryHandle(dirHandle, undefined, normTarget || undefined);
+
+  if (!normTarget) {
+    return { meta, resolvedFile: null };
+  }
+
+  const classification = classifyPosixTargetPath(normTarget);
+  const eqPaths = getEquivalentHomePaths(normTarget);
+  const candidates = computeRelativeCandidates(
+    normTarget,
+    dirHandle.name || meta.name,
+    meta.basePrefix,
+    false
+  );
+  if (classification.filename && !candidates.includes(classification.filename)) {
+    candidates.push(classification.filename);
+  }
+
+  for (const candidate of candidates) {
+    const fileHandle = await traverseDirectoryForFile(dirHandle, candidate, false);
+    if (fileHandle) {
+      const file: File = await fileHandle.getFile();
+      const { content, format } = await decodeFileObject(file);
+      for (const p of eqPaths) {
+        activeHandlesByPath.set(p, fileHandle);
+        cachedFilePermByPath.set(p, 'granted');
+      }
+      activeHandlesByFilename.set(file.name, {
+        handle: fileHandle,
+        posixPath: normTarget,
+        relativePath: candidate,
+      });
+      addRecentPosixPath({
+        posixPath: normTarget,
+        resolvedRelativePath: candidate,
+        filename: file.name,
+      });
+      return {
+        meta,
+        resolvedFile: {
+          filename: file.name,
+          content,
+          format,
+          posixPath: normTarget,
+          relativePath: candidate,
+          canWriteDisk: true,
+          mountedDirName: dirHandle.name || meta.name,
+        },
+      };
+    }
+  }
+
+  return { meta, resolvedFile: null };
+}
+
 export async function promptAndMountDirectoryForPosixFile(
   rawTargetPath: string
 ): Promise<PosixResolvedFile> {
@@ -1192,8 +1333,6 @@ export async function promptAndMountDirectoryForPosixFile(
   detectAndSaveHomePrefix(normTarget);
   const classification = classifyPosixTargetPath(normTarget);
 
-  // If the folder is $HOME/Scaricati (Downloads) or inside a cross-origin iframe, use Universal Directory Mount
-  // synchronously on the click so Chromium never blocks it!
   if (classification.isSystemBlockedDirectoryMount) {
     const universalResolved = await promptUniversalDirectoryMount(normTarget);
     if (universalResolved) {
@@ -1207,7 +1346,6 @@ export async function promptAndMountDirectoryForPosixFile(
   if (win && typeof win.showDirectoryPicker === 'function') {
     let dirHandle: any = null;
     try {
-      // Omit recycled `id` so Chrome ALWAYS honors `startIn` (never falls back to poisoned/Recenti history)
       dirHandle = await win.showDirectoryPicker({
         mode: 'read',
         startIn,
@@ -1999,9 +2137,29 @@ async function traverseDirectoryForFile(
 
   let currentDir = rootHandle;
   for (let i = 0; i < parts.length - 1; i++) {
+    const dirSegment = parts[i];
     try {
-      currentDir = await currentDir.getDirectoryHandle(parts[i], { create: createIfMissing });
+      currentDir = await currentDir.getDirectoryHandle(dirSegment, { create: createIfMissing });
     } catch {
+      // Case-insensitive directory lookup fallback (useful on Linux/POSIX paths)
+      if (!createIfMissing && typeof currentDir.entries === 'function') {
+        let matchedDir: any = null;
+        try {
+          const targetLower = dirSegment.toLowerCase();
+          for await (const [entryName, entryHandle] of currentDir.entries()) {
+            if (entryHandle?.kind === 'directory' && String(entryName).toLowerCase() === targetLower) {
+              matchedDir = entryHandle;
+              break;
+            }
+          }
+        } catch {
+          matchedDir = null;
+        }
+        if (matchedDir) {
+          currentDir = matchedDir;
+          continue;
+        }
+      }
       return null;
     }
   }
@@ -2010,6 +2168,19 @@ async function traverseDirectoryForFile(
   try {
     return await currentDir.getFileHandle(fileName, { create: createIfMissing });
   } catch {
+    // Case-insensitive file lookup fallback
+    if (!createIfMissing && typeof currentDir.entries === 'function') {
+      try {
+        const targetLower = fileName.toLowerCase();
+        for await (const [entryName, entryHandle] of currentDir.entries()) {
+          if (entryHandle?.kind === 'file' && String(entryName).toLowerCase() === targetLower) {
+            return entryHandle;
+          }
+        }
+      } catch {
+        return null;
+      }
+    }
     return null;
   }
 }
@@ -2022,40 +2193,53 @@ async function getLazyFallbackFileForMount(
   meta: MountedPosixDirectoryMeta,
   candidates: string[]
 ): Promise<{ relKey: string; fileObj: File } | null> {
+  const altIds = Array.from(
+    new Set([
+      meta.id,
+      `fallback_${sanitizeIdFragment(meta.name)}`,
+      `mount_${sanitizeIdFragment(meta.name)}`,
+      'legacy_root',
+    ])
+  );
+
   // 1. Check in-memory session map first (O(1) / fast)
-  const memMap = fallbackMountedDirs.get(meta.id);
-  if (memMap) {
-    for (const candidate of candidates) {
-      if (memMap.has(candidate)) {
-        return { relKey: candidate, fileObj: memMap.get(candidate)! };
-      }
-      const candLower = candidate.toLowerCase();
-      for (const [relKey, fileObj] of memMap.entries()) {
-        if (relKey.toLowerCase() === candLower) {
-          return { relKey, fileObj };
+  for (const id of altIds) {
+    const memMap = fallbackMountedDirs.get(id);
+    if (memMap) {
+      for (const candidate of candidates) {
+        if (memMap.has(candidate)) {
+          return { relKey: candidate, fileObj: memMap.get(candidate)! };
+        }
+        const candLower = candidate.toLowerCase();
+        for (const [relKey, fileObj] of memMap.entries()) {
+          if (relKey.toLowerCase() === candLower) {
+            return { relKey, fileObj };
+          }
         }
       }
     }
   }
 
   // 2. Check lightweight string[] path index and load ONLY the single matching File from IndexedDB
-  let indexKeys = fallbackMountedIndexes.get(meta.id);
-  if (!indexKeys) {
-    const storedIdx = await idbGet(`${FALLBACK_DIR_INDEX_PREFIX}${meta.id}`).catch(() => null);
-    if (Array.isArray(storedIdx)) {
-      indexKeys = storedIdx;
-      fallbackMountedIndexes.set(meta.id, indexKeys);
+  for (const id of altIds) {
+    let indexKeys = fallbackMountedIndexes.get(id);
+    if (!indexKeys) {
+      const storedIdx = await idbGet(`${FALLBACK_DIR_INDEX_PREFIX}${id}`).catch(() => null);
+      if (Array.isArray(storedIdx)) {
+        indexKeys = storedIdx;
+        fallbackMountedIndexes.set(id, indexKeys);
+      }
     }
-  }
 
-  if (indexKeys && indexKeys.length > 0) {
-    for (const candidate of candidates) {
-      const candLower = candidate.toLowerCase();
-      const matchedKey = indexKeys.find((k) => k === candidate || k.toLowerCase() === candLower);
-      if (matchedKey) {
-        const fileObj = (await idbGet(`${FALLBACK_DIR_FILE_PREFIX}${meta.id}:${matchedKey}`).catch(() => null)) as File | null;
-        if (fileObj) {
-          return { relKey: matchedKey, fileObj };
+    if (indexKeys && indexKeys.length > 0) {
+      for (const candidate of candidates) {
+        const candLower = candidate.toLowerCase();
+        const matchedKey = indexKeys.find((k) => k === candidate || k.toLowerCase() === candLower);
+        if (matchedKey) {
+          const fileObj = (await idbGet(`${FALLBACK_DIR_FILE_PREFIX}${id}:${matchedKey}`).catch(() => null)) as File | null;
+          if (fileObj) {
+            return { relKey: matchedKey, fileObj };
+          }
         }
       }
     }
@@ -2063,38 +2247,40 @@ async function getLazyFallbackFileForMount(
 
   // 3. Backward-compatibility fallback for legacy monolithic `fallback_dir:<id>` records
   //    (migrates on read to lazy index and deletes monolithic blob array!)
-  try {
-    const legacyEntries = await idbGet(`${FALLBACK_DIR_PREFIX}${meta.id}`);
-    if (Array.isArray(legacyEntries) && legacyEntries.length > 0) {
-      const filteredKeys: string[] = [];
-      let matched: { relKey: string; fileObj: File } | null = null;
-      for (const [relKey, fileObj] of legacyEntries as Array<[string, File]>) {
-        if (!fileObj || !isIndexableTextOrCodeFile(fileObj)) continue;
-        filteredKeys.push(relKey);
-        if (!matched) {
-          const rkLower = relKey.toLowerCase();
-          if (candidates.some((c) => c === relKey || c.toLowerCase() === rkLower)) {
-            matched = { relKey, fileObj };
-          }
-        }
-      }
-      fallbackMountedIndexes.set(meta.id, filteredKeys);
-      // Migrate asynchronously in background so RAM stays clean next reload
-      (async () => {
-        try {
-          await idbPut(`${FALLBACK_DIR_INDEX_PREFIX}${meta.id}`, filteredKeys);
-          for (const [relKey, fileObj] of legacyEntries as Array<[string, File]>) {
-            if (fileObj && isIndexableTextOrCodeFile(fileObj)) {
-              await idbPut(`${FALLBACK_DIR_FILE_PREFIX}${meta.id}:${relKey}`, fileObj).catch(() => {});
+  for (const id of altIds) {
+    try {
+      const legacyEntries = await idbGet(`${FALLBACK_DIR_PREFIX}${id}`);
+      if (Array.isArray(legacyEntries) && legacyEntries.length > 0) {
+        const filteredKeys: string[] = [];
+        let matched: { relKey: string; fileObj: File } | null = null;
+        for (const [relKey, fileObj] of legacyEntries as Array<[string, File]>) {
+          if (!fileObj || !isIndexableTextOrCodeFile(fileObj)) continue;
+          filteredKeys.push(relKey);
+          if (!matched) {
+            const rkLower = relKey.toLowerCase();
+            if (candidates.some((c) => c === relKey || c.toLowerCase() === rkLower)) {
+              matched = { relKey, fileObj };
             }
           }
-          await idbDelete(`${FALLBACK_DIR_PREFIX}${meta.id}`).catch(() => {});
-        } catch {}
-      })();
-      if (matched) return matched;
+        }
+        fallbackMountedIndexes.set(meta.id, filteredKeys);
+        // Migrate asynchronously in background so RAM stays clean next reload
+        (async () => {
+          try {
+            await idbPut(`${FALLBACK_DIR_INDEX_PREFIX}${meta.id}`, filteredKeys);
+            for (const [relKey, fileObj] of legacyEntries as Array<[string, File]>) {
+              if (fileObj && isIndexableTextOrCodeFile(fileObj)) {
+                await idbPut(`${FALLBACK_DIR_FILE_PREFIX}${meta.id}:${relKey}`, fileObj).catch(() => {});
+              }
+            }
+            await idbDelete(`${FALLBACK_DIR_PREFIX}${id}`).catch(() => {});
+          } catch {}
+        })();
+        if (matched) return matched;
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
 
   return null;
@@ -2109,9 +2295,90 @@ export async function resolveAndReadPosixFile(
     throw new Error('Percorso POSIX vuoto o non valido.');
   }
 
-  await ensureLegacyMountMigrated();
   detectAndSaveHomePrefix(normPath);
   const eqPaths = getEquivalentHomePaths(normPath);
+  const mountsSync = getMountedDirectoriesMeta();
+  let mountNeedingReauth: { id: string; name: string } | null = null;
+
+  // 0. ZERO-AWAIT FAST PATH (preserves Chrome transient user activation from `:e <path><Enter>`!):
+  //    Before ANY IndexedDB await, check if a matching mounted FS API directory handle is already
+  //    warmed up in memory (supports BOTH full paths like ~/test/b.txt AND bare filenames like b.txt).
+  //    If its permission is 'prompt' after reload, call requestPermission() SYNCHRONOUSLY on Tick 0!
+  const classificationSync = classifyPosixTargetPath(normPath);
+  const isBareFilename = !normPath.includes('/') && !normPath.startsWith('~');
+  for (const m of mountsSync) {
+    if (m.mode !== 'fs_api') continue;
+    const cachedHandle = cachedDirHandlesById.get(m.id);
+    if (!cachedHandle) continue;
+
+    const mountName = cachedHandle.name || m.name;
+    const strictCandidates = computeRelativeCandidates(normPath, mountName, m.basePrefix || '', true);
+    const parentMatches = folderNamesMatch(mountName, classificationSync.parentDirName);
+    const fastCandidates =
+      strictCandidates.length > 0
+        ? strictCandidates
+        : parentMatches && classificationSync.filename
+        ? [classificationSync.filename]
+        : isBareFilename
+        ? [normPath]
+        : [];
+    if (fastCandidates.length === 0) continue;
+
+    let permState = cachedDirPermById.get(m.id);
+    if (permState !== 'granted') {
+      if (typeof cachedHandle.requestPermission === 'function') {
+        try {
+          // Called BEFORE any await to keep Chrome user activation alive!
+          const requested = await cachedHandle.requestPermission({ mode: 'read' });
+          permState = requested === 'granted' ? 'granted' : requested === 'denied' ? 'denied' : 'prompt';
+          cachedDirPermById.set(m.id, permState);
+        } catch {
+          permState = await queryHandlePermissionFast(cachedHandle, 'read');
+          cachedDirPermById.set(m.id, permState);
+        }
+      } else {
+        permState = 'granted';
+        cachedDirPermById.set(m.id, 'granted');
+      }
+    }
+
+    if (permState === 'granted') {
+      for (const candidate of fastCandidates) {
+        const fileHandle = await traverseDirectoryForFile(cachedHandle, candidate, false);
+        if (fileHandle) {
+          const file: File = await fileHandle.getFile();
+          const { content, format } = await decodeFileObject(file);
+          for (const p of eqPaths) {
+            activeHandlesByPath.set(p, fileHandle);
+            cachedFilePermByPath.set(p, 'granted');
+          }
+          activeHandlesByFilename.set(file.name, {
+            handle: fileHandle,
+            posixPath: normPath,
+            relativePath: candidate,
+          });
+          addRecentPosixPath({
+            posixPath: normPath,
+            resolvedRelativePath: candidate,
+            filename: file.name,
+          });
+          return {
+            filename: file.name,
+            content,
+            format,
+            posixPath: normPath,
+            relativePath: candidate,
+            canWriteDisk: true,
+            mountedDirName: mountName,
+          };
+        }
+      }
+    } else if (!mountNeedingReauth) {
+      mountNeedingReauth = { id: m.id, name: mountName };
+    }
+  }
+
+  await ensureLegacyMountMigrated();
 
   // 1. Check bound single/multi-file handles in memory or IndexedDB
   const boundHandle = await getSavedBoundFileHandle(normPath);
@@ -2174,7 +2441,7 @@ export async function resolveAndReadPosixFile(
     }
   }
 
-  // 2. Search across ALL mounted directories (FS API)
+  // 2. Search across ALL mounted directories (FS API) + any persisted orphan dir_mount:* handles in IDB
   const mounts = getMountedDirectoriesMeta();
   const fsMounts: Array<{
     meta: MountedPosixDirectoryMeta;
@@ -2183,11 +2450,14 @@ export async function resolveAndReadPosixFile(
     basePrefix: string;
     permState: 'granted' | 'prompt' | 'denied';
   }> = [];
+  let missingFsHandleForCoveredMount = false;
+  const seenMountHandles = new Set<any>();
 
   for (const m of mounts) {
     if (m.mode === 'fs_api') {
       const h = await getDirectoryHandleForMount(m);
       if (h) {
+        seenMountHandles.add(h);
         const permState = await queryHandlePermissionFast(h, 'read');
         cachedDirPermById.set(m.id, permState);
         fsMounts.push({
@@ -2197,11 +2467,59 @@ export async function resolveAndReadPosixFile(
           basePrefix: m.basePrefix || '',
           permState,
         });
+      } else {
+        const strict = computeRelativeCandidates(normPath, m.name, m.basePrefix || '', true);
+        if (strict.length > 0 || folderNamesMatch(m.name, classificationSync.parentDirName)) {
+          missingFsHandleForCoveredMount = true;
+        }
       }
     }
   }
 
-  let mountNeedingReauth: { id: string; name: string } | null = null;
+  // Also check if any persisted FileSystemDirectoryHandle in IndexedDB matches the target parent folder
+  // (e.g. if metadata was previously downgraded to 'fallback' or mount IDs drifted across versions)
+  try {
+    const allIdbEntries = await idbGetAllEntries();
+    for (const entry of allIdbEntries) {
+      if (
+        (entry.key.startsWith(DIR_HANDLE_PREFIX) || entry.key === ROOT_HANDLE_KEY) &&
+        entry.value &&
+        typeof entry.value.getFileHandle === 'function' &&
+        !seenMountHandles.has(entry.value)
+      ) {
+        const h = entry.value;
+        const hName = h.name || '';
+        if (
+          hName &&
+          (folderNamesMatch(hName, classificationSync.parentDirName) ||
+            computeRelativeCandidates(normPath, hName, '', true).length > 0)
+        ) {
+          seenMountHandles.add(h);
+          const permState = await queryHandlePermissionFast(h, 'read');
+          const syntheticId = entry.key.startsWith(DIR_HANDLE_PREFIX)
+            ? entry.key.slice(DIR_HANDLE_PREFIX.length)
+            : `mount_${sanitizeIdFragment(hName)}`;
+          cachedDirHandlesById.set(syntheticId, h);
+          cachedDirPermById.set(syntheticId, permState);
+          fsMounts.push({
+            meta: {
+              id: syntheticId,
+              name: hName,
+              basePrefix: '',
+              mode: 'fs_api',
+              addedAt: Date.now(),
+            },
+            handle: h,
+            name: hName,
+            basePrefix: '',
+            permState,
+          });
+        }
+      }
+    }
+  } catch {
+    // ignore IDB scan errors
+  }
 
   for (const strictPass of [true, false]) {
     const orderedMounts = [...fsMounts].sort((a, b) => {
@@ -2222,7 +2540,7 @@ export async function resolveAndReadPosixFile(
       if (mount.permState !== 'granted') {
         const granted = await ensureHandlePermission(mount.handle, 'read');
         if (!granted) {
-          if (strictPass && !mountNeedingReauth) {
+          if ((strictPass || isBareFilename) && !mountNeedingReauth) {
             mountNeedingReauth = { id: mount.meta.id, name: mount.name };
           }
           continue;
@@ -2343,9 +2661,27 @@ export async function resolveAndReadPosixFile(
     throw err;
   }
 
+  // If the folder metadata claimed fs_api but its handle is missing from IndexedDB, ask user to mount it
+  if (missingFsHandleForCoveredMount) {
+    const err = new Error('NO_ROOT_AUTHORIZED');
+    (err as any).code = 'NO_ROOT_AUTHORIZED';
+    (err as any).posixPath = normPath;
+    throw err;
+  }
+
   // Never auto-open the browser's directory picker from resolveAndReadPosixFile!
   const cov = getPosixPathCoverageInfo(normPath);
   if (cov.isCovered && cov.coveredByMount) {
+    if (cov.coveredByMount.mode === 'fallback') {
+      const err = new Error(
+        `La cartella "${cov.coveredByMount.name}" è montata come snapshot statico e non contiene "${cov.classification.filename}". Montala in modalità Live (o aggiorna lo snapshot) per vedere tutti i file esistenti e nuovi.`
+      );
+      (err as any).code = 'FALLBACK_STALE_OR_MISSING';
+      (err as any).mountId = cov.coveredByMount.id;
+      (err as any).mountName = cov.coveredByMount.name;
+      (err as any).posixPath = normPath;
+      throw err;
+    }
     throw new Error(
       `Il file "${cov.classification.filename}" non è stato trovato all'interno della cartella montata "${cov.coveredByMount.name}".`
     );

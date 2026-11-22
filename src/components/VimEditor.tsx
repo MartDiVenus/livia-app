@@ -18,7 +18,7 @@ import { json } from '@codemirror/lang-json';
 import { xml } from '@codemirror/lang-xml';
 import { StreamLanguage } from '@codemirror/language';
 import { copyToClipboard } from '../utils/clipboard';
-import { generateGeminiContent } from '../utils/geminiClient';
+import { generateGeminiContent, AiModelTier, normalizeAiModelTier } from '../utils/geminiClient';
 import { shell } from '@codemirror/legacy-modes/mode/shell';
 import { stex } from '@codemirror/legacy-modes/mode/stex';
 import { go } from '@codemirror/legacy-modes/mode/go';
@@ -373,7 +373,7 @@ export function VimEditor({
     action: 'prompt' | 'translate' | 'latin',
     arg: string,
     targetMode: 'selection' | 'document' | 'cursor',
-    modelTier?: 'flash' | 'pro' | 'argon'
+    modelTier?: AiModelTier
   ) => {
     const view = editorRef.current?.view;
     if (!view) throw new Error(lang === 'it' ? "Editor non pronto." : "Editor not ready.");
@@ -397,10 +397,10 @@ export function VimEditor({
       textToProcess = "";
     }
 
-    let storedTier = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-    if (storedTier === 'flash-lite' || storedTier.includes('2.5') || storedTier.includes('2.0') || storedTier.includes('1.5') || storedTier.includes('3.7')) {
-      storedTier = 'flash';
-      if (typeof window !== 'undefined') localStorage.setItem('livia_gemini_model', 'flash');
+    const rawStored = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') : 'hydrogen';
+    const storedTier = normalizeAiModelTier(rawStored);
+    if (typeof window !== 'undefined' && rawStored !== storedTier) {
+      localStorage.setItem('livia_gemini_model', storedTier);
     }
 
     const finalTier = modelTier || storedTier;
@@ -2070,27 +2070,30 @@ export function VimEditor({
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            const current = typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') || 'flash' : 'flash';
-            const next = current === 'flash' ? 'pro' : current === 'pro' ? 'argon' : 'flash';
+            const current = normalizeAiModelTier(
+              typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') : 'hydrogen'
+            );
+            const next: AiModelTier = current === 'hydrogen' ? 'neon' : current === 'neon' ? 'carbon' : 'hydrogen';
             if (typeof window !== 'undefined') {
               localStorage.setItem('livia_gemini_model', next);
               window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model: next } }));
             }
             setStatusMessage(lang === 'it' 
-              ? `Modello IA: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'pro' ? 'Gemini 3.1 Pro' : 'Gemini 4 Argon'}` 
-              : `AI Model: ${next === 'flash' ? 'Gemini 3.8 Flash' : next === 'pro' ? 'Gemini 3.1 Pro' : 'Gemini 4 Argon'}`);
+              ? `Modello IA: ${next === 'hydrogen' ? 'Gemini 4 Hydrogen' : next === 'neon' ? 'Gemini 4 Neon' : 'Gemini 4 Carbon'}` 
+              : `AI Model: ${next === 'hydrogen' ? 'Gemini 4 Hydrogen' : next === 'neon' ? 'Gemini 4 Neon' : 'Gemini 4 Carbon'}`);
           }}
           className="px-1.5 py-0.5 my-auto mx-1 bg-white/20 hover:bg-white/30 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/80 text-white dark:text-emerald-300 rounded text-[9px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-all border border-white/30 dark:border-emerald-700/50 shadow-xs"
-          title={lang === 'it' ? 'Modello Gemini attivo. Clicca per alternare (3.8 Flash / 3.1 Pro / 4.0 Argon)' : 'Active Gemini Model. Click to cycle (3.8 Flash / 3.1 Pro / 4.0 Argon)'}
+          title={lang === 'it' ? 'Modello Gemini attivo. Clicca per alternare (4.0 Hydrogen / 4.0 Neon / 4.0 Carbon)' : 'Active Gemini Model. Click to cycle (4.0 Hydrogen / 4.0 Neon / 4.0 Carbon)'}
           id="footer-gemini-model-btn"
         >
           <Sparkles size={10} className="text-amber-300 shrink-0" />
           <span>
-            {typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'argon' 
-              ? '4.0 ARGON' 
-              : typeof window !== 'undefined' && localStorage.getItem('livia_gemini_model') === 'pro' 
-              ? '3.1 PRO' 
-              : '3.8 FLASH'}
+            {(() => {
+              const m = normalizeAiModelTier(typeof window !== 'undefined' ? localStorage.getItem('livia_gemini_model') : 'hydrogen');
+              if (m === 'carbon') return '4.0 CARBON';
+              if (m === 'neon') return '4.0 NEON';
+              return '4.0 HYDROGEN';
+            })()}
           </span>
         </button>
 

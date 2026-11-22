@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { testGeminiConnection } from '../utils/geminiClient';
+import { testGeminiConnection, AiModelTier, normalizeAiModelTier } from '../utils/geminiClient';
 import { 
   X, 
   Key, 
@@ -57,7 +57,7 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [apiKeyInput, setApiKeyInput] = useState<string>('');
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
-  const [defaultModel, setDefaultModel] = useState<'flash' | 'pro' | 'argon' | 'pro-thinking'>('flash');
+  const [defaultModel, setDefaultModel] = useState<AiModelTier>('hydrogen');
   const [activeTab, setActiveTab] = useState<'ai' | 'editor' | 'misc'>('ai');
   const [isTestingKey, setIsTestingKey] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string; isCloudDisabled?: boolean } | null>(null);
@@ -99,15 +99,11 @@ export function SettingsModal({
     if (isOpen && typeof window !== 'undefined') {
       const savedKey = localStorage.getItem('livia_custom_gemini_key') || '';
       setApiKeyInput(savedKey);
-      const rawModel = (localStorage.getItem('livia_gemini_model') || localStorage.getItem('livia_default_model') || 'flash');
-      let sanitizedModel: 'flash' | 'pro' | 'argon' | 'pro-thinking' = 'flash';
-      if (rawModel === 'argon' || rawModel === 'pro' || rawModel === 'pro-thinking') {
-        sanitizedModel = rawModel;
-      }
-      if (typeof rawModel === 'string' && (rawModel === 'flash-lite' || rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5') || rawModel.includes('3.7'))) {
-        sanitizedModel = 'flash';
-        localStorage.setItem('livia_gemini_model', 'flash');
-        localStorage.setItem('livia_default_model', 'flash');
+      const rawModel = localStorage.getItem('livia_gemini_model') || localStorage.getItem('livia_default_model') || 'hydrogen';
+      const sanitizedModel = normalizeAiModelTier(rawModel);
+      if (rawModel !== sanitizedModel) {
+        localStorage.setItem('livia_gemini_model', sanitizedModel);
+        localStorage.setItem('livia_default_model', sanitizedModel);
       }
       setDefaultModel(sanitizedModel);
     }
@@ -151,12 +147,17 @@ export function SettingsModal({
     );
   };
 
-  const handleModelChange = (model: 'flash' | 'pro' | 'argon' | 'pro-thinking') => {
+  const handleModelChange = (model: AiModelTier) => {
     setDefaultModel(model);
     localStorage.setItem('livia_default_model', model);
     localStorage.setItem('livia_gemini_model', model);
     window.dispatchEvent(new CustomEvent('livia-model-changed', { detail: { model } }));
-    const label = model === 'argon' ? '4.0 Argon (gemini-4-argon)' : model === 'pro' ? '3.1 Pro' : '3.8 Flash';
+    const label =
+      model === 'carbon'
+        ? '4.0 Carbon (gemini-4-carbon)'
+        : model === 'neon'
+        ? '4.0 Neon (gemini-4-neon)'
+        : '4.0 Hydrogen (gemini-4-hydrogen)';
     showToast(
       lang === 'it'
         ? `Modello AI predefinito impostato su Gemini ${label}`
@@ -388,53 +389,53 @@ export function SettingsModal({
                 </h3>
                 <div className="flex flex-col gap-2">
                   <button
-                    onClick={() => handleModelChange('flash')}
+                    onClick={() => handleModelChange('hydrogen')}
                     className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
-                      defaultModel === 'flash'
+                      defaultModel === 'hydrogen'
                         ? 'bg-emerald-50 dark:bg-emerald-950/30 border-emerald-400 dark:border-emerald-700/60'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
-                      <span>⚡ 3.8 Flash (Consigliato / Free Tier)</span>
-                      {defaultModel === 'flash' && <Check size={14} className="text-emerald-600 dark:text-emerald-400" />}
+                      <span>⚡ 4.0 Hydrogen (Consigliato / Free Tier)</span>
+                      {defaultModel === 'hydrogen' && <Check size={14} className="text-emerald-600 dark:text-emerald-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Massimo equilibrio tra accuratezza, velocità e quota gratuita (gemini-3.8-flash).' : 'Optimal balance between accuracy, speed, and free quota (gemini-3.8-flash).'}
+                      {lang === 'it' ? 'Massimo equilibrio tra velocità, qualità e quota gratuita (gemini-4-hydrogen).' : 'Optimal balance between speed, quality, and free quota (gemini-4-hydrogen).'}
                     </p>
                   </button>
 
                   <button
-                    onClick={() => handleModelChange('pro')}
+                    onClick={() => handleModelChange('neon')}
                     className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
-                      defaultModel === 'pro'
+                      defaultModel === 'neon'
                         ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-400 dark:border-indigo-700/60'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
-                      <span>🧠 3.1 Pro (Avanzato)</span>
-                      {defaultModel === 'pro' && <Check size={14} className="text-indigo-600 dark:text-indigo-400" />}
+                      <span>🧠 4.0 Neon (Avanzato / Codice)</span>
+                      {defaultModel === 'neon' && <Check size={14} className="text-indigo-600 dark:text-indigo-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Ragionamento profondo e sintassi complessa (gemini-3.1-pro-preview).' : 'Deep reasoning and complex syntax (gemini-3.1-pro-preview).'}
+                      {lang === 'it' ? 'Testi complessi, codice e analisi STEM avanzata (gemini-4-neon).' : 'Complex text, coding, and advanced STEM analysis (gemini-4-neon).'}
                     </p>
                   </button>
 
                   <button
-                    onClick={() => handleModelChange('argon')}
+                    onClick={() => handleModelChange('carbon')}
                     className={`p-2.5 rounded-xl text-left border transition-all cursor-pointer ${
-                      defaultModel === 'argon'
+                      defaultModel === 'carbon'
                         ? 'bg-amber-100 dark:bg-amber-900/30 border-amber-400 dark:border-amber-700/60'
                         : 'bg-white dark:bg-[#0D0F12] border-gray-200 dark:border-[#2D2D2D] hover:bg-gray-50 dark:hover:bg-zinc-800'
                     }`}
                   >
                     <div className="flex items-center justify-between font-bold text-gray-900 dark:text-zinc-100 text-xs">
-                      <span>🔥 4.0 Argon (Top / Ultima Generazione)</span>
-                      {defaultModel === 'argon' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
+                      <span>🔥 4.0 Carbon (Top / Ragionamento Profondo)</span>
+                      {defaultModel === 'carbon' && <Check size={14} className="text-amber-600 dark:text-amber-400" />}
                     </div>
                     <p className="text-[10px] text-gray-500 dark:text-zinc-400 mt-0.5">
-                      {lang === 'it' ? 'Ultimo modello ammiraglia ad altissima capacità di ragionamento e codice (gemini-4-argon).' : 'Latest flagship model with top reasoning and coding capabilities (gemini-4-argon).'}
+                      {lang === 'it' ? 'Modello ammiraglia per ragionamento profondo, architettura e debugging (gemini-4-carbon).' : 'Flagship model for deep reasoning, architecture, and complex debugging (gemini-4-carbon).'}
                     </p>
                   </button>
                 </div>

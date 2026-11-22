@@ -16,7 +16,7 @@ async function startServer() {
     if (!apiKey) {
       throw new Error("Manca la chiave Gemini API. Imposta la chiave nelle Impostazioni o nei Secret della piattaforma.");
     }
-    return new GoogleGenAI({ apiKey });
+    return new GoogleGenAI({ apiKey, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
   }
 
   // API Route for Gemini AI operations (translation, content prompting, latin generation, ping)
@@ -24,20 +24,42 @@ async function startServer() {
     const { action, text, targetLanguage, prompt, theme, modelTier, userApiKey, systemInstruction } = req.body;
 
     async function generateWithModelFallback(contents: string, sysInst?: string, configOverrides: any = {}): Promise<any> {
-      // Clean up tier if it points to deprecated 2.5, 2.0, 1.5, 3.7, or legacy flash-lite
-      let tier = (modelTier || 'flash').trim().toLowerCase();
-      if (tier.includes('2.5') || tier.includes('2.0') || tier.includes('1.5') || tier.includes('3.7') || tier === 'flash-lite') {
-        tier = 'flash';
-      }
-
-      // Valid models in current @google/genai SDK
-      let modelsToTry: string[] = ["gemini-3.8-flash", "gemini-flash-latest"];
-      if (tier === 'argon' || tier === 'gemini-4-argon' || tier === '4-argon') {
-        modelsToTry = ["gemini-4-argon", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-flash-latest"];
-      } else if (tier === 'pro' || tier === 'pro-thinking') {
-        modelsToTry = ["gemini-3.1-pro-preview", "gemini-4-argon", "gemini-3.8-flash", "gemini-flash-latest"];
-      } else if (tier.startsWith('gemini-')) {
-        modelsToTry = [tier, "gemini-3.8-flash", "gemini-flash-latest"];
+      // Normalize tier (supporting Gemini 4 Hydrogen/Neon/Carbon and backward-compatible legacy aliases)
+      const rawTier = (modelTier || 'hydrogen').trim().toLowerCase();
+      let modelsToTry: string[] = ["gemini-4-hydrogen"];
+      if (
+        rawTier === 'carbon' ||
+        rawTier === 'gemini-4-carbon' ||
+        rawTier === '4-carbon' ||
+        rawTier === 'argon' ||
+        rawTier === 'gemini-4-argon' ||
+        rawTier === '4-argon'
+      ) {
+        modelsToTry = ["gemini-4-carbon", "gemini-4-neon", "gemini-4-hydrogen"];
+      } else if (
+        rawTier === 'neon' ||
+        rawTier === 'gemini-4-neon' ||
+        rawTier === '4-neon' ||
+        rawTier === 'pro' ||
+        rawTier === 'pro-thinking' ||
+        rawTier.includes('3.1-pro')
+      ) {
+        modelsToTry = ["gemini-4-neon", "gemini-4-hydrogen"];
+      } else if (
+        rawTier === 'hydrogen' ||
+        rawTier === 'gemini-4-hydrogen' ||
+        rawTier === '4-hydrogen' ||
+        rawTier === 'flash' ||
+        rawTier === 'flash-lite' ||
+        rawTier.includes('3.8') ||
+        rawTier.includes('3.7') ||
+        rawTier.includes('2.5') ||
+        rawTier.includes('2.0') ||
+        rawTier.includes('1.5')
+      ) {
+        modelsToTry = ["gemini-4-hydrogen"];
+      } else if (rawTier.startsWith('gemini-')) {
+        modelsToTry = [rawTier, "gemini-4-hydrogen"];
       }
       
       const clientsToTry: { client: any; isCustom: boolean }[] = [];
@@ -103,7 +125,7 @@ Line 1: The Latin phrase (e.g., "Audentes fortuna iuvat")
 Line 2: The Italian translation (e.g., "La fortuna aiuta gli audaci")
 Line 3: Elegant, short context, historical origin, or philosophical commentary (max 2 sentences).
 
-Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`, systemInstruction, { temperature: 0.95 });
+Make sure the response contains ONLY these three lines of clean text, with no extra markdown formatting, asterisks, or prefix tags (like "Line 1:"). Just the lines of text.`, systemInstruction);
         return res.json({ result: response.text });
       }
 
@@ -138,7 +160,7 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
         }
       } else if (errMsg.includes("429") || errMsg.includes("RESOURCE_EXHAUSTED") || errMsg.includes("prepayment credits") || errMsg.includes("Quota") || errMsg.includes("quota")) {
         if (userApiKey && userApiKey.trim() !== "") {
-          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o passa al modello 3.8 Flash.";
+          errMsg = "Quota/Limite di frequenza raggiunto per la tua API Key personale su Google AI Studio. Attendi circa 30-60 secondi prima della prossima richiesta o passa al modello 4.0 Hydrogen.";
         } else {
           errMsg = "Quota Gemini API esaurita per la chiave di sistema condivisa. Inserisci la tua API Key personale nelle Impostazioni dell'editor (icona ingranaggio) per procedere senza limiti.";
         }
@@ -171,9 +193,9 @@ Make sure the response contains ONLY these three lines of clean text, with no ex
 
     try {
       const apiKeyToTest = hasCustomKey ? userApiKey : process.env.GEMINI_API_KEY;
-      const client = new GoogleGenAI({ apiKey: apiKeyToTest! });
-      const testModels = ["gemini-3.8-flash", "gemini-4-argon", "gemini-flash-latest"];
-      let activeModel = "gemini-3.8-flash";
+      const client = new GoogleGenAI({ apiKey: apiKeyToTest!, httpOptions: { headers: { 'User-Agent': 'aistudio-build' } } });
+      const testModels = ["gemini-4-hydrogen", "gemini-4-neon", "gemini-4-carbon"];
+      let activeModel = "gemini-4-hydrogen";
       let succeeded = false;
       let lastErr: any = null;
 
